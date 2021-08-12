@@ -1,0 +1,688 @@
+---
+title: "Tonsil Unstimulated B cell scRNA-seq"
+subtitle: "Part 1: SCT normalization followed by Seurat integration"
+author: "Diego A. Espinoza"
+date: Last compiled on `r format(Sys.Date(), "%d %B %Y")`
+output:
+  html_document:
+    code_folding: hide
+    fig_caption: yes
+    df_print: paged
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(autodep        = TRUE,
+                      echo           = TRUE,
+                      error          = FALSE,
+                      fig.height     = 8,
+                      message        = FALSE,
+                      warning        = FALSE)
+```
+
+```{r echo=TRUE, message=FALSE, results='hide', warning=FALSE}
+require(magrittr)
+require(knitr)
+require(dplyr)
+require(tidyr)
+require(tibble)
+require(ggplot2)
+require(Seurat)
+require(cowplot)
+require(kableExtra)
+require(readr)
+require(readxl)
+source("/Users/diegoespinoza/Documents/espinozada_lab/r_packages/seurat_helper_functions/seurathelper/R/seurat_helper_functions.R")
+parent.directory <- "/Volumes/SanDiskSSD/bar-or_lab/projects/tonsil_project/analysis/sct_seurat/"
+rerun_analysis <- FALSE
+```
+
+## A. Data merging
+Here we take the preprocessed Seurat objects and eliminate T cells based on expression of at least 2 of CD3D, IL32, and CD2 transcripts. We merge the data from one of the patients (TC124) together, before then running SCTransform on each dataset independently. We next prepare for integration using the Seurat v3 pipeline. Note that it is computationally intensive. The actual integration itself, performed also, is quite computationally intensive as well.
+```{r plot PCAs, eval = rerun_analysis, fig.show = "hold", fig.width = 8}
+load(file = "/Volumes/SanDiskSSD/bar-or_lab/projects/tonsil_project/analysis/all_preprocessing_310/processed_Seurat_object_list.RData")
+for(i in 1:length(B.list)){
+  #get rid of T cell contamination using canonical T cell markers
+  if(all(c("CD3D", "IL32", "CD2") %in% rownames(B.list[[i]]))){
+    Tcell_barcodes <- names(which(Matrix::colSums(B.list[[i]][["RNA"]][c("CD3D", "IL32", "CD2")] > 0) > 1))
+    B.list[[i]] <- B.list[[i]][,!(colnames(B.list[[i]]) %in% Tcell_barcodes)]
+  }
+}
+B.list <- list(merge(x = B.list[[1]], y = B.list[2:3]), B.list[[4]], B.list[[5]])
+B.list <- lapply(1:length(B.list), function(i){
+  return(SCTransform(B.list[[i]], verbose = TRUE))
+})
+save(B.list, file = paste0(parent.directory, "sct_seurat_list.RData"))
+B.features <- SelectIntegrationFeatures(object.list = B.list, nfeatures = 3000)
+B.list <- PrepSCTIntegration(object.list = B.list, anchor.features = B.features, verbose = TRUE)
+B.anchors <- FindIntegrationAnchors(object.list = B.list, normalization.method = "SCT", anchor.features = B.features, dims = 1:40, verbose = TRUE)
+rm(B.list)
+save(B.anchors, file = paste0(parent.directory, "sct_anchors.RData"))
+```
+```{r integration, eval = rerun_analysis}
+load(file = paste0(parent.directory, "sct_anchors.RData"))
+B.combined <- IntegrateData(anchorset = B.anchors, normalization.method = "SCT", do.cpp = T, dims = 1:40, verbose = TRUE) 
+save(B.combined, file = paste0(parent.directory, "sct_integrated.RData"))
+```
+
+## B. PCA
+After performing Seurat v3 integration, we will run PCA on our integrated assay. We exclude the IGHV, IGL, and IGK chain genes as we do not want for our clustering and downstream analyses to be driven by variable expression of these genes. However, this will keep the IGHD, IGHM, IGHG1/2/3/4/P, and IGHA1/2 genes in the analysis.
+```{r PCA, eval = rerun_analysis, fig.show = "hold", fig.width = 8}
+load(file = paste0(parent.directory, "sct_integrated.RData"))
+SCT_assay <- B.combined@assays$SCT
+save(SCT_assay, file = paste0(parent.directory, "sct_separate_sct_assay.RData"))
+B.combined@assays$SCT <- NULL
+IG.genes <- grep("^IGL|^IGK|^IGHV", B.combined@assays$integrated@var.features, value = TRUE)
+B.combined@assays$integrated@var.features <- setdiff(B.combined@assays$integrated@var.features, c(IG.genes))
+B.combined <- RunPCA(B.combined, npcs = 100, verbose = TRUE)
+save(B.combined, file = paste0(parent.directory, "sct_PCA.RData"))
+```
+
+## C. UMAP, RNA normalization, and Louvain clustering
+### C.1 Choosing the best number of principal components {.tabset}
+We next investigate, using the DimHeatmap function, the top 60 PCs in our dataset. This type of visual inspection will help us arrive at the conclusion that 35 PCs seems to appropriately capture variation in the data, as we note that some of the "later" PCs are driven solely by one gene and thus are not informative for the purposes of community identification, where we aim for a network of genes to be driving the clustering.
+```{r check PCs, eval = TRUE, results = "hide"}
+load(file = paste0(parent.directory, "sct_PCA.RData"))
+
+PC_list <- c("1:12", "13:24", "25:36", "37:48", "49:60")
+PC_names <- c("PCs 1:12", "PCs 13:24", "PCs 25:36", "PCs 37:48", "PCs 49:60")
+PCHM_list <- lapply(1:5, function(i) {
+  PCHM_name <- PC_names[i]
+  src <- c("#### {{PCHM_name}} {.unnumbered}",
+           "```{r PCHM_name-{{i}}, fig.width = 9, fig.height = 6}",
+           "DimHeatmap(B.combined, cells = 1000, dims = {{PC_list[[i]]}}, nfeatures = 10, balanced = TRUE, reduction = \"pca\")",
+           "```",
+           "")
+  knit_expand(text = src)
+})
+
+out <- knit_child(text = unlist(PCHM_list), options = list(echo = FALSE, cache = FALSE))
+
+```
+`r out`
+
+
+### C.2 Building the kNN graph using uwot
+We next use a custom function, `BuildAnnoyUMAP` which calls the 'uwot' package implementation of UMAP. Briefly, this builds an approximate nearest neighbors graph (kNN) on the PCA or Harmony space (100 dimensions) using the annoy package (with cosine distance metric). We store the kNN graph, the cosine distance graph, and derive a shared-nearest-neighbor (SNN) graph from the kNN graph that is stored as well. We use the kNN to produce the UMAP dimensionality reduction coordinates, and we will keep the SNN for use in clustering downstream.
+```{r UMAP & kNN/SNN, eval = rerun_analysis, include = TRUE}
+load(file = paste0(parent.directory, "sct_PCA.RData"))
+dims.to.use <- 1:35
+B.combined <- BuildAnnoyUMAP(B.combined,
+                             reduction = "pca",
+                             dims = dims.to.use,
+                             reduction_name = "pca_UMAP",
+                             reduction_key = "pcaumap_",
+                             return_graphs = TRUE)
+```
+
+### C.3 Adding select scores
+We perform log-normalization on the RNA assay prior to using "AddModuleScore" to add scores for select gene sets to our dataset.
+```{r score addition, eval = rerun_analysis, include = TRUE}
+
+DefaultAssay(B.combined) <- "RNA"
+B.combined <- NormalizeData(B.combined)
+
+#Add cell cycle scores
+B.combined <- CellCycleScoring(B.combined, s.features = cc.genes$s.genes, g2m.features = cc.genes$g2m.genes, set.ident = FALSE)
+
+#Add LZ and DZ scores
+blood.data <- read.delim("~/Documents/bar-or_lab/projects/tonsil_project/analysis/supplementary_information/blood_vitora_et_al/blood_DZ_LZ_genes.txt", sep = '\t',  stringsAsFactors = FALSE) %>% as_tibble()
+LZ.markers <- blood.data %>% filter(Enriched.in == "LZ") %>% arrange(desc(Z.score)) %>% pull(final_gene_name)
+LZ.markers <- LZ.markers[LZ.markers %in% rownames(B.combined)]
+DZ.markers <- blood.data %>% filter(Enriched.in == "DZ") %>% arrange(desc(Z.score)) %>% pull(final_gene_name)
+DZ.markers <- DZ.markers[DZ.markers %in% rownames(B.combined)]
+B.combined <- AddModuleScore(B.combined, features = list(LZ.markers), name = "LZ.Score")
+B.combined <- AddModuleScore(B.combined, features = list(DZ.markers), name = "DZ.Score")
+
+#Add MYC target scores
+myc.targets <- read.delim("~/Documents/bar-or_lab/projects/tonsil_project/analysis/supplementary_information/genesets/HALLMARK_MYC_TARGETS_V2.txt", sep = '\t',  stringsAsFactors = FALSE, skip = 1)[,1]
+B.combined <- AddModuleScore(B.combined, features = list(myc.targets), name = "MYC.signature")
+
+#Add dissociation scores
+read_excel("~/Documents/bar-or_lab/projects/tonsil_project/analysis/supplementary_information/dissociation_genes.xlsx") %>% select('Human ID') %>% na.omit %>% pull("Human ID") -> dissociation.genes
+B.combined <- AddModuleScore(B.combined, features = list(dissociation.genes), name = "dissoc.signature")
+
+#Add CD40 signaling score
+CD40.signalling <- read.delim("~/Documents/bar-or_lab/projects/tonsil_project/analysis/supplementary_information/genesets/BASSO_CD40_SIGNALING_UP.txt", sep = '\t',  stringsAsFactors = FALSE, skip = 1)[,1] %>% unique
+B.combined <- AddModuleScore(B.combined, features = list(CD40.signalling), name = "CD40.signalling")
+
+#Add scores from CD40 stim and BCR datasets
+geneset_path <- "~/Documents/bar-or_lab/projects/tonsil_project/analysis/supplementary_information/genesets_inhouse/Gene List - Different modes of B cell activation from Rui.xlsx"
+geneset_path %>% 
+  excel_sheets() %>% 
+  purrr::set_names(~paste0("rui_", .)) %>% 
+  purrr::set_names(~gsub(" ", "_", .)) %>% 
+  purrr::map(read_excel, path = geneset_path, col_names = "gene") %>%
+  lapply(function(x){x %>% pull(gene)}) -> rui_genesets
+B.combined <- AddModuleScore(B.combined, features = rui_genesets[c(1,5)], name = c("BCR_stim", "CD40_stim"))
+
+```
+
+### C.4 Louvain clustering
+We next use the Louvain clustering algorithm to perform clustering using the SNN graph obtained from the BuildAnnoyUMAP command. We cluster over a number of resolutions 0.5 -> 1.3.
+```{r clustering, eval = rerun_analysis}
+
+B.resolutions <- seq(0.5, 1.3, 0.1)
+B.combined <- FindClusters(B.combined,
+                           resolution = B.resolutions,
+                           graph.name = "annoy_nn_snn",
+                           verbose = TRUE)
+for(i in 1:length(B.resolutions)){
+  temp.slot <- paste0("annoy_nn_snn_res.", B.resolutions[i])
+  temp.clusterIDs <- B.combined[[temp.slot]][[1]]
+  temp.clusterIDs.levels <- sort(unique(as.numeric(as.character(temp.clusterIDs))))
+  B.combined[[temp.slot]] <- factor(temp.clusterIDs, levels = temp.clusterIDs.levels)
+}
+
+save(B.combined, file = paste0(parent.directory, "sct_clustered.RData"))
+```
+
+
+## D. UMAP visualizations
+### D.1 Batch effect occurs using PCA {.tabset}
+We next plot our cells in UMAP space. We find 25 clusters at our highest resolution of Louvain clustering. We observe that there is minimal batch effect across donor and samples.
+```{r UMAP, eval = TRUE, include = TRUE, results = "hide", fig.width = 9, fig.height=6}
+load(file = paste0(parent.directory, "sct_clustered.RData"))
+DimPlot(B.combined, pt.size = 0.6, reduction = "pca_UMAP", label = TRUE, label.size = 5, label.box = TRUE)
+DimPlot(B.combined, pt.size = 0.3, reduction =  "pca_UMAP", label = TRUE, label.size = 5, split.by = "orig.ident", ncol = 3, label.box = TRUE)
+```
+
+
+### D.2 Louvain results{.tabset}
+We can also visualize the other resolutions of Louvain clustering that we have. 
+```{r cluster options, eval = TRUE, include = TRUE, results = "hide"}
+resolution.vector <- seq(0.5, 1.3, 0.1)
+n.resolutions <- length(resolution.vector)
+
+resdimplot_list <- lapply(1:n.resolutions, function(i) {
+  resolution.name <- resolution.vector[i]
+  temp.slot <- paste0("annoy_nn_snn_res.", resolution.name)
+  src <- c("#### {{temp.slot}} {.unnumbered}",
+           "```{r resdimplot-{{i}}, fig.width = 8, fig.height = 6}",
+           "DimPlot(B.combined, pt.size = 0.8, reduction = \"pca_UMAP\", group.by = \"{{temp.slot}}\", label = TRUE, label.size = 5, label.box = TRUE)",
+           "```",
+           "")
+  knit_expand(text = src)
+})
+out <- knit_child(text = unlist(resdimplot_list), options = list(echo = FALSE, cache = FALSE))
+
+```
+`r out`
+
+## E. More visualizations
+### E.1 Genes of Interest {.tabset}
+We can check the expression data for some expected marker genes as well.
+```{r some genes of interest, eval = TRUE, include = TRUE, results = "hide", fig.width = 12, fig.height = 50}
+genes.of.interest <- c("CCL4", "CCL3", "AICDA", "IGHD",
+                       "SELL","CD27", "TNFRSF13B", "PLCG2", "CCL22",
+                       "XBP1", "MIR155HG", "CD83", "BCL2A1", "CXCR4", "BCL6",
+                       "CCR7", "EMP3", "CD3D", "IGHE", "PPP1R14A", "LINC01781", "TNFRSF4",
+                       "LGALS1", "HSPA1A", "IL3RA", "FCER2", "IGHG1", "IGHG2",
+                       "IGHG3", "IGHG4", "IGHGP", "IGHA1", "IGHA2", "IGHM", "JUN", "FOS",
+                       "ISG15", "NPW", "TNFRSF4", "TCL1B")
+n.genes <- length(genes.of.interest)
+
+geneplot_list <- lapply(1:n.genes, function(i) {
+  gene.name <- genes.of.interest[i]
+  src <- c("#### {{gene.name}} {.unnumbered}",
+           "```{r scoreplot-{{i}}, fig.width = 8, fig.height = 6}",
+           "VlnPlot(B.combined, pt.size = 0.02, features = \"{{gene.name}}\")",
+           "```",
+           "")
+  knit_expand(text = src)
+})
+
+out <- knit_child(text = unlist(geneplot_list), options = list(echo = FALSE, cache = FALSE))
+
+```
+`r out`
+
+### E.2 Modules and Metadata of Interest {.tabset}
+We can check the score data for the scores of our modules as well.
+```{r some scores of interest, eval = TRUE, include = TRUE, results = "hide"}
+
+features.of.interest <- c("DZ.Score1", "LZ.Score1", "CD40.signalling1", "MYC.signature1", "G2M.Score", "S.Score", "BCR_stim1", "CD40_stim2", "percent.mt", "percent.dissoc", "nFeature_RNA", "nCount_RNA")
+n.features <- length(features.of.interest)
+
+featureplot_list <- lapply(1:n.features, function(i) {
+  feature.name <- features.of.interest[i]
+  #temp.slot <- paste0("harmony_annoy_nn_snn_res.", resolution.name)
+  src <- c("#### {{feature.name}} {.unnumbered}",
+           "```{r geneplot-{{i}}, fig.width = 8, fig.height = 6}",
+           "VlnPlot(B.combined, pt.size = 0.02, features = \"{{feature.name}}\")",
+           "```",
+           "")
+  knit_expand(text = src)
+})
+
+out <- knit_child(text = unlist(featureplot_list), options = list(echo = FALSE, cache = FALSE))
+
+```
+`r out`
+
+### E.3 PC violin plots {.tabset}
+We can check the PCA values for our first 35 PCs across the clusters.
+```{r PCA vlnplot, eval = TRUE, include = TRUE, results = "hide", fig.width = 9, fig.height=6}
+PCs_for_plotting <- colnames(B.combined@reductions$pca)[1:35]
+n_PCs <- length(PCs_for_plotting)
+PCplot_list <- lapply(1:n_PCs, function(i) {
+  PC_name <- PCs_for_plotting[i]
+  src <- c("#### {{PC_name}} {.unnumbered}",
+           "```{r vlnpcplot-{{i}}, fig.width = 9, fig.height = 5}",
+           "VlnPlot(B.combined, features = \"{{PC_name}}\", pt.size = 0.02)",
+           "```",
+           "")
+  knit_expand(text = src)
+})
+out <- knit_child(text = unlist(PCplot_list), options = list(echo = FALSE, cache = FALSE))
+```
+`r out`
+
+
+
+### E.4 Cluster donor split
+We can also show quantification of the percntage donor within each cluster.
+```{r quantification of cluster size, eval = TRUE, fig.width=12}
+tibble(donor = B.combined$donor, cluster = B.combined@active.ident) %>% group_by(donor, cluster) %>% tally() %>% mutate(freq = n/sum(n)) %>% group_by(cluster) %>% mutate(freq = freq/sum(freq)) -> B.combined.cluster.proportions
+donor.color.pal <- RColorBrewer::brewer.pal("Set3", n = 5)
+ggplot(B.combined.cluster.proportions, aes(x = cluster,  y = freq, fill = donor, group = donor))+
+  geom_col(position = "stack", color = "white")+
+  scale_fill_manual(values = donor.color.pal)+
+  ylab("Proportion of Total Cells")+
+  theme_cowplot()
+```
+
+
+### E.5 Cell cycle
+We can also the cell cycle stages of different cells in our data to see if any clusters are dominated by cells in specific cell cycle (G1, G2/M, S) stages. We also plot the relative proportions of each of these phases within each cluster.
+```{r cell cycle, eval = TRUE, include = TRUE, results = "hide", fig.width = 7, fig.height = 6, fig.show="hold"}
+DimPlot(B.combined, group.by = "Phase")
+tibble(phase = B.combined$Phase, cluster = B.combined@active.ident) %>% group_by(phase, cluster) %>% tally() %>% group_by(cluster) %>% mutate(freq = n/sum(n)) -> B.combined.phase.proportions
+ggplot(B.combined.phase.proportions, aes(x = cluster,  y = freq, fill = phase, group = phase))+
+  geom_col(position = position_stack(), color = "black")+
+  scale_fill_discrete()+
+  ylab("Proportion of Cluster Cells")+
+  theme_cowplot()
+```
+
+
+## F. Marker genes
+### F.1 Quick markers{.tabset}
+We will now find markers for our clusters at the highest resolution. We will first use the R package SoupX to quickly find a set of markers for our Seurat clusters.
+```{r dimplot quick, eval = TRUE}
+DimPlot(B.combined, pt.size = 0.6, reduction = "pca_UMAP", label = TRUE, label.size = 5, label.box = TRUE)
+```
+```{r soupx markers, eval = TRUE, include = TRUE, results = "hide"}
+cluster_list <- sort(unique(B.combined$seurat_clusters))
+n_clusters <- length(cluster_list)
+mrks <- SoupX::quickMarkers(B.combined[["RNA"]]@data, B.combined$seurat_clusters, N = 20)
+mrks_list <- lapply(cluster_list, function(i){
+ mrks %>%
+   dplyr::filter(cluster == i) %>%
+   dplyr::pull(gene)
+})
+dotplot_list <- lapply(1:n_clusters, function(i) {
+  cluster_name <- cluster_list[i]
+  temp.slot <- paste0("Cluster ", cluster_name)
+  if(length(mrks_list[[{{i}}]]) == 0){return(NULL)}
+  src <- c("#### {{temp.slot}} {.unnumbered}",
+           "```{r soupdotplot-{{i}}, fig.width = 12, fig.height = 6}",
+           "DotPlot(B.combined, features = mrks_list[[{{i}}]], assay = \"RNA\")+RotatedAxis()",
+           "```",
+           "")
+  knit_expand(text = src)
+})
+out <- knit_child(text = unlist(dotplot_list), options = list(echo = FALSE, cache = FALSE))
+
+```
+`r out`
+
+### F.2 Finding marker genes
+We also use Seurat's FindAllMarkers function to determine differentially expressed genes between clusters (one-vs-all approach) using a logistic regression framework and the "donor" as a latent covariate.
+```{r find all markers, eval = FALSE}
+B_RNA_markers <- FindAllMarkers(B.combined, assay = "RNA", logfc.threshold = 0.3, test.use = "LR", verbose = TRUE, latent.vars = "donor", only.pos = FALSE)
+save(B_RNA_markers, file = paste0(parent.directory, "markers.RData"))
+```
+
+### F.3 Visualizing marker genes {.tabset}
+```{r viz genes, eval=T, results="hide"}
+load(file = paste0(parent.directory, "markers.RData"))
+DefaultAssay(B.combined) <- "RNA"
+cluster_list <- levels(B_RNA_markers$cluster)
+n_clusters <- length(cluster_list)
+gene_list <- lapply(cluster_list, function(i){
+  B_RNA_markers %>%
+    dplyr::filter(p_val_adj < 0.01) %>%
+    dplyr::filter(cluster == i) %>%
+    dplyr::top_n(20, wt = avg_log2FC) %>%
+    dplyr::filter(avg_log2FC > 0) %>%
+    dplyr::pull(gene)
+})
+dotplot_list <- lapply(1:n_clusters, function(i) {
+  cluster_name <- cluster_list[i]
+  temp.slot <- paste0("Cluster ", cluster_name)
+  if(length(gene_list[[i]]) == 0 ){
+    return(NULL)
+  }
+  src <- c("#### {{temp.slot}} {.unnumbered}",
+           "```{r dotplot-{{i}}, fig.width = 12, fig.height = 6}",
+           "DotPlot(B.combined, features = gene_list[[{{i}}]])+RotatedAxis()+scale_color_viridis_c(direction = -1, option = \"A\")",
+           "```",
+           "")
+  knit_expand(text = src)
+})
+out <- knit_child(text = unlist(dotplot_list), options = list(echo = FALSE, cache = FALSE))
+```
+`r out`
+
+
+### F.4 Exploring marker genes for each cluster {.tabset}
+We include tables of the marker genes found in each cluster.
+```{r marker-cluster tables, results="hide", eval=TRUE}
+
+cluster_vector <- levels(B.combined@active.ident)
+n_clusters <- length(cluster_vector)
+
+markers.list <- lapply(1:n_clusters, function(i) {
+  B_RNA_markers %>%
+    dplyr::filter(cluster == cluster_vector[i] & p_val_adj < 0.01) %>%
+    dplyr::arrange(-avg_log2FC) %>%
+    dplyr::select(cluster, gene, avg_log2FC, p_val, p_val_adj) %>%
+    dplyr::mutate_if(is.numeric, format, digits = 3)
+})
+
+
+names(markers.list) <- paste("Cluster", cluster_vector)
+markers.list <- c(markers.list, "ALL" = list(B_RNA_markers %>%  dplyr::arrange(-avg_log2FC) %>% select(cluster, gene, avg_log2FC, p_val, p_val_adj) %>% mutate_if(is.numeric, format, digits = 3)))
+
+src_list <- lapply(1:(n_clusters+1), function(i) {
+  if(i == (n_clusters+1)){
+    label <- "ALL"
+  } else {
+    label <- cluster_vector[i]
+  }
+  src <- c("#### {{label}} {.unnumbered} ",
+           "<div style = \"width:65%; height:auto; align:left\">",
+           "```{r marker-cluster-{{label}}, fig.width=3}",
+           "DT::datatable(markers.list[[{{i}}]], rownames = FALSE)",
+           "```",
+           "</div>",
+           "")
+  knit_expand(text = src)
+})
+out <- knit_child(text = unlist(src_list), options = list(echo = FALSE, cache = FALSE))
+```
+`r out`
+
+### F.5 Setting new cluster identities.
+```{r new clust idents, eval = TRUE, fig.width=12}
+load(file = paste0(parent.directory, "sct_clustered.RData"))
+cluster_levels <- paste0("C",c(1,0,12,22,5,17,7,6,4,9,18,15,3,2,14,8,10,19,13,16,24,20,23,11,21))
+B.combined$new_clusters_nums <- factor(paste0("C", as.character(B.combined$annoy_nn_snn_res.1.3)), levels = cluster_levels)
+DotPlot(B.combined, features = rev(c("ID3", "CCR7", "IGHD", "HVCN1", "FCMR", "FCER2","CD69", "IER2", "FOS", "IFI44L", "ISG15",  "C1orf56", "APOBEC3C", "EIF5A", "LY9", "GPR183", "TNFRSF13B", "ANXA2", "S100A4", "S100A6", "VIM", "LMNA", "LGALS1", "CD27","IGHA1", "IGHA2", "LGALS3", "HLA-DRB5", "HLA-DQA1", "TXN", "TNFRSF18", "CD83", "MIR155HG",  "NFKB1", "NFKBIA", "NME1", "MYC", "CCL4", "CCL3", "RGS13", "LTB", "CD38", "CD81", "NEIL1", "AICDA", "HMGB2", "MKI67", "CDC20", "LMO2", "FCRL2", "FCRL3", "FCRL5", "BIK", "BCL2A1", "MZB1", "PRDM1", "RASSF6", "IGHM", "IGHG1", "IGHG2", "PLCG2")), group.by = "new_clusters_nums")+coord_flip()+RotatedAxis()+scale_color_viridis_c(option = "B", direction = -1)
+cluster_names <- c("Naive 1",
+                   "Naive 2",
+                   "Naive IER2",
+                   "Naive IFN1",
+                   "B EIF5A",
+                   "B LY9",
+                   "Memory 1",
+                   "Memory 2",
+                   "Memory 3",
+                   "Memory LGALS1",
+                   "Memory IgA",
+                   "Memory LGALS3",
+                   "Activated",
+                   "Activated NME1",
+                   "Activated Chemokine",
+                   "GC",
+                   "DZ 1",
+                   "DZ 2",
+                   "DZ 3",
+                   "GC LMO2",
+                   "GC IgA",
+                   "LZ",
+                   "ASC IgM",
+                   "ASC IgG",
+                   "B PLCG2")
+
+B.combined$cluster_names <- plyr::mapvalues(B.combined$new_clusters_nums,
+                                            from = cluster_levels,
+                                            to = cluster_names)
+
+Idents(B.combined) <- "cluster_names"
+
+DotPlot(B.combined, features = rev(c("ID3", "CCR7", "IGHD", "HVCN1", "FCMR", "FCER2","CD69", "IER2", "FOS", "IFI44L", "ISG15",  "C1orf56", "APOBEC3C", "EIF5A", "LY9", "ACP5", "GPR183", "TNFRSF13B", "ANXA2", "S100A4", "S100A6", "VIM", "LMNA", "LGALS1", "CD27","IGHA1", "IGHA2", "LGALS3", "HLA-DRB5", "HLA-DQA1", "TXN", "TNFRSF18", "CD83", "MIR155HG",  "NFKB1", "NFKBIA", "NME1", "MYC", "CCL4", "CCL3", "RGS13", "LTB", "CD38", "CD81", "NEIL1", "AICDA", "HMGB2", "MKI67", "CDC20", "LMO2", "FCRL2", "FCRL3", "FCRL5", "BIK", "BCL2A1", "MZB1", "PRDM1", "RASSF6", "IGHM", "IGHG1", "IGHG2", "PLCG2")), group.by = "cluster_names")+coord_flip()+RotatedAxis()+scale_color_viridis_c(option = "B", direction = -1)
+
+DimPlot(B.combined, label = TRUE, label.box = TRUE, repel = TRUE)+NoLegend()
+```
+```{r save new clusters, eval = FALSE}
+save(B.combined, file = paste0(parent.directory, "sct_named_clusters.RData"))
+```
+
+## G. Large cell population analysis
+### G.1 Naive B cells
+We next isolate the Naive B cell clusters from the remainder of the dataset and perform marker identification between only these populations.
+```{r naive iso, eval = FALSE}
+load(file = paste0(parent.directory, "sct_named_clusters.RData"))
+B.naive <- subset(B.combined, idents = c("Naive 1", "Naive 2", "Naive IFN1", "Naive IER2"))
+B_naive_RNA_markers <- FindAllMarkers(B.naive, assay = "RNA", test.use = "LR", latent.vars = "donor", logfc.threshold = 0.3)
+```
+
+### G.2 Memory B cells
+We next isolate the Memory B cell clusters from the remainder of the dataset and perform marker identification between only these populations.
+```{r memory iso, eval = FALSE}
+B.memory <- subset(B.combined, idents = c("Memory 1", "Memory 2", "Memory 3", "Memory LGALS1", "Memory IgA", "Memory LGALS3"))
+B_memory_RNA_markers <- FindAllMarkers(B.memory, assay = "RNA", test.use = "LR", latent.vars = "donor", logfc.threshold = 0.3)
+save(B.naive, B.memory, B_naive_RNA_markers, B_memory_RNA_markers, file = paste0(parent.directory, "naive_memory_markers.RData"))
+```
+
+
+### G.3 Naive B cell markers
+We plot the Naive B cell markers for each of the Naive clusters from comparison in G.1.
+```{r plot naive markers, eval = TRUE,results = "hide"}
+load(file = paste0(parent.directory, "naive_memory_markers.RData"))
+cluster_list <- levels(B_naive_RNA_markers$cluster)
+n_clusters <- length(cluster_list)
+gene_list <- lapply(cluster_list, function(i){
+  B_naive_RNA_markers %>%
+    dplyr::filter(p_val_adj < 0.01) %>%
+    dplyr::filter(cluster == i) %>%
+    dplyr::top_n(20, wt = avg_log2FC) %>%
+    dplyr::filter(avg_log2FC > 0) %>%
+    dplyr::pull(gene)
+})
+dotplot_list <- lapply(1:n_clusters, function(i) {
+  cluster_name <- cluster_list[i]
+  temp.slot <- paste0("Cluster ", cluster_name)
+  if(length(gene_list[[i]]) == 0 ){
+    return(NULL)
+  }
+  src <- c("#### {{temp.slot}} {.unnumbered}",
+           "```{r dotplot-naive-{{i}}, fig.width = 12, fig.height = 6}",
+           "DotPlot(B.naive, features = gene_list[[{{i}}]])+RotatedAxis()+scale_color_viridis_c(direction = -1, option = \"A\")",
+           "```",
+           "")
+  knit_expand(text = src)
+})
+out <- knit_child(text = unlist(dotplot_list), options = list(echo = FALSE, cache = FALSE))
+```
+`r out`
+
+
+### G.3 Memory B cell markers
+We plot the Memory B cell markers for each of the Memory clusters from comparison in G.2.
+```{r plot memory markers, eval = TRUE, results = "hide"}
+cluster_list <- levels(B_memory_RNA_markers$cluster)
+n_clusters <- length(cluster_list)
+gene_list <- lapply(cluster_list, function(i){
+  B_memory_RNA_markers %>%
+    dplyr::filter(p_val_adj < 0.01) %>%
+    dplyr::filter(cluster == i) %>%
+    dplyr::top_n(20, wt = avg_log2FC) %>%
+    dplyr::filter(avg_log2FC > 0) %>%
+    dplyr::pull(gene)
+})
+dotplot_list <- lapply(1:n_clusters, function(i) {
+  cluster_name <- cluster_list[i]
+  temp.slot <- paste0("Cluster ", cluster_name)
+  if(length(gene_list[[i]]) == 0 ){
+    return(NULL)
+  }
+  src <- c("#### {{temp.slot}} {.unnumbered}",
+           "```{r dotplot-mem-{{i}}, fig.width = 12, fig.height = 6}",
+           "DotPlot(B.memory, features = gene_list[[{{i}}]])+RotatedAxis()+scale_color_viridis_c(direction = -1, option = \"A\")",
+           "```",
+           "")
+  knit_expand(text = src)
+})
+out <- knit_child(text = unlist(dotplot_list), options = list(echo = FALSE, cache = FALSE))
+```
+`r out`
+
+## H. Downstream processing
+### H.1 Isolating GC and PBs
+We isolate the GC and PBs from the rest of the dataset.
+```{r split dataset, eval = FALSE, include = TRUE, results = "hide"}
+
+GCPC_clusters <- c("LZ", "GC", "GC IgA", "DZ 1", "DZ 2", "DZ 3", "B PLCG2", "GC LMO2", "ASC IgM", "ASC IgG")
+all_clusters <- levels(B.combined$cluster_names)
+nonGCPC_clusters <- setdiff(all_clusters, GCPC_clusters)
+
+nonGCPC_clusters_identifiers <- WhichCells(B.combined, idents = nonGCPC_clusters)
+GCPC_clusters_identifiers <- WhichCells(B.combined, idents = GCPC_clusters)
+
+B.combined@meta.data[GCPC_clusters_identifiers,] %>%
+  rownames_to_column(var = "identifier") %>%
+  mutate(parent_cluster = cluster_names, orig_ident = orig.ident) %>%
+  select(identifier, parent_cluster, donor, orig_ident) -> GCPC_metadata
+
+B.combined@meta.data[nonGCPC_clusters_identifiers,] %>%
+  rownames_to_column(var = "identifier") %>%
+  mutate(parent_cluster = cluster_names, orig_ident = orig.ident) %>%
+  select(identifier, parent_cluster, donor, orig_ident) -> nonGCPC_metadata
+
+save(GCPC_metadata, nonGCPC_metadata, file = paste0(parent.directory, "sct_cluster_metadata.RData"))
+
+```
+
+### H.2 Conversion to h5ad
+We create an h5ad file of the RNA assay for use in pySCENIC downstream.
+```{r h5ad conversion, eval = FALSE}
+parent.directory <- "/Volumes/SanDiskSSD/bar-or_lab/projects/tonsil_project/analysis/sct_seurat/"
+load(file = paste0(parent.directory, "sct_named_clusters.RData"))
+var_genes <- B.combined[["integrated"]]@var.features
+B.combined[["RNA"]]@meta.features["highly_variable"] <- rownames(B.combined[["RNA"]]@meta.features) %in% var_genes
+sceasy::convertFormat(B.combined, from="seurat", to="anndata", outFile= paste0(parent.directory, "sct_named_clusters.h5ad"), main_layer = "counts", transfer_layers = "data")
+dir.create(paste0(parent.directory, "/graphs/"))
+Matrix::writeMM(obj = B.combined@graphs$annoy_fuzzy, file = paste0(parent.directory, "/graphs/fuzzy.mtx"))
+Matrix::writeMM(obj = B.combined@graphs$annoy_nn_cosine, file = paste0(parent.directory, "/graphs/cosine.mtx"))
+```
+
+#### DoubletDecon
+We can run doubletdecon separately and visualize the doublets here as well.
+```{r doubletdecon, eval = FALSE}
+#check doublet decon Rmd here
+load("/Volumes/SanDiskSSD/bar-or_lab/projects/tonsil_project/analysis/doubletdecon/doublet_decon_list.RData")
+temp.names <- c("TC124.1", "TC124.2", "TC124.3", "TC125", "TC126")
+y <- lapply(1:length(doublet_decon_list), function(i){
+  temp <- doublet_decon_list[[i]]
+  temp$DRS_doublet_table %>% tibble::rownames_to_column(var = "barcode") %>% filter(isADoublet == TRUE) %>% pull(barcode) %>% paste0(temp.names[i], "_", .) -> temp.barcodes
+  return(temp.barcodes)
+}) %>% unlist
+
+```
+
+#### scikit-learn
+We can train a logistic regression model on our clusters of interests to gauge if there is appropriate separation (see Svennson, V blogpost about this if you want to actually get it to work...)
+```{r cluster number, eval = FALSE, include = TRUE, results = "hide"}
+load(file = paste0(parent.directory, "sct_harmony_nomtreg_after_clustering_noIGgenes.RData"))
+resolution.vector <- seq(0.1, 1.3, 0.1)
+require(reticulate)
+DefaultAssay(B.combined) <- "RNA"
+B.combined <- NormalizeData(B.combined)
+B.combined[["RNA"]]@var.features <- B.combined[["SCT"]]@var.features
+B.combined <- ScaleData(B.combined)
+B.combined.downsample = subset(B.combined, cells = sample(Cells(B.combined), 4210))
+X <- t(B.combined.downsample[["RNA"]]@scale.data)
+sklearn <- import("sklearn")
+
+lr_tests <- lapply(1:length(resolution.vector), function(i) {
+  print(paste0("starting LR for resolution ", resolution.vector[i]))
+  X_class <- as.character(B.combined.downsample[[paste0("harmony_annoy_nn_snn_res.", resolution.vector[i])]][,1]) 
+  listy <- sklearn$model_selection$train_test_split(X, X_class,  test_size = 0.5) #X_train, X_test, y_train, y_test
+  X_train <- listy[[1]]
+  X_test <- listy[[2]]
+  y_train <- listy[[3]]
+  y_test <- listy[[4]]
+  lr <- sklearn$linear_model$LogisticRegression(penalty='l1', C=0.2, solver = "saga")
+  lr$fit(X_train, y_train)
+  y_prob <- lr$predict_proba(X_test)
+  print(paste0("total number of positive predictive genes for resolution ", resolution.vector[i]))
+  print(lr$classes_)
+  print(rowSums(lr$coef_ > 0))
+  lr_res <- data.frame(lr$coef_)
+  colnames(lr_res) <- colnames(X)
+  print(paste0("finished LR for resolution ", resolution.vector[i]))
+  return(list(y_prob, y_test, lr_res, lr))
+})
+save(lr_tests, file = paste0(parent.directory, "sct_harmony_nomtreg_lr_tests_noIGgenes.Rdata"))
+
+lr_roc_list <- lapply(1:length(resolution.vector), function(i){
+  temp_lr_test <- lr_tests[[i]]
+  names(temp_lr_test) <- c("y_prob", "y_test", "lr_res", "lr")
+  clusters <- temp_lr_test$lr$classes_
+  resolution_df <- lapply(1:length(clusters), function(j){
+    temp_list <- sklearn$metrics$roc_curve(temp_lr_test$y_test == clusters[j], temp_lr_test$y_prob[,j])
+    fpr <- temp_list[[1]]
+    tpr <- temp_list[[2]]
+    temp_data_frame <- data.frame(fpr = fpr, tpr = tpr, cluster = clusters[j])
+  }) %>% do.call(what = rbind, .)
+  resolution_df$resolution <- resolution.vector[i]
+  return(resolution_df)
+})
+
+lr_roc_plots <- lapply(1:length(lr_roc_list), function(i){
+  ggplot(lr_roc_list[[i]], aes(x = fpr, y = tpr, group = cluster, color = cluster))+geom_line()
+})
+
+
+lr <- sklearn$linear_model$LogisticRegression(penalty='l1', C=0.2, solver = "saga")
+lr$fit(listy[[1]], listy[[3]])
+
+```
+
+#### Code storage
+This is backup code to transfer data into scanpy for PAGA when anndata2ri isn't working.
+```{r paga, eval = FALSE}
+load(file = paste0(parent.directory, "sct_harmony_nomtreg_after_scoring.RData"))
+dir.create("/Volumes/SanDiskSSD/bar-or_lab/projects/tonsil_project/analysis/sct_harmony_nomtreg_310/merge_prior/scanpy/annoy_nn_cosine/")
+graph.prefix.dir <- "/Volumes/SanDiskSSD/bar-or_lab/projects/tonsil_project/analysis/sct_harmony_nomtreg_310/merge_prior/scanpy/annoy_nn_cosine/"
+
+write.csv(B.combined@graphs$harmony_annoy_nn_cosine@i, file = paste0(graph.prefix.dir, "indices.txt"), quote = FALSE, row.names = FALSE)
+write.csv(B.combined@graphs$harmony_annoy_nn_cosine@p, file = paste0(graph.prefix.dir, "indptr.txt"), quote = FALSE, row.names = FALSE)
+write.csv(B.combined@graphs$harmony_annoy_nn_cosine@x, file = paste0(graph.prefix.dir, "shape.txt"), quote = FALSE, row.names = FALSE)
+
+# see PAGA notebook here
+# can then continue with running UMAP again, this time initializing positions with PAGA
+# you should be able to implement reticulate here...
+
+paga_pos <- read.csv(
+  "/Volumes/SanDiskSSD/bar-or_lab/projects/tonsil_project/analysis/sct_harmony_nomtreg_310/merge_prior/scanpy/paga_0.8.txt")
+paga_pos$seurat_cluster <- factor(paga_pos$seurat_cluster, unique(paga_pos$seurat_cluster))
+paga_matrix <- data.frame("seurat_cluster" = B.combined$harmony_annoy_nn_snn_res.0.8) %>%
+  dplyr::left_join(y = paga_pos, by = "seurat_cluster") %>%
+  dplyr::select(X0, X1)
+
+dims.to.use <- 1:35
+B.combined <- BuildAnnoyUMAP(B.combined,
+                             reduction = "harmony",
+                             dims = dims.to.use,
+                             reduction.name = "harmony_UMAP",
+                             graph.key = "harmony_annoy",
+                             reduction.key = "harmonyumap_",
+                             init.pos = as.matrix(paga_matrix))
+
+
+```
+
+

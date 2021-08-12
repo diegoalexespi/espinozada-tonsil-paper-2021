@@ -1,0 +1,314 @@
+---
+title: "Tonsil Unstimulated B cell scRNA-seq Dimensionality Reduction and Clustering"
+subtitle: "Subclustering the GC and PC clusters"
+author: "Diego A. Espinoza"
+date: Last compiled on `r format(Sys.Date(), "%d %B %Y")`
+output:
+  html_document:
+    code_folding: hide
+fig_caption: yes
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r echo=TRUE, message=FALSE, results='hide', warning=FALSE}
+require(magrittr)
+require(knitr)
+require(dplyr)
+require(tidyr)
+require(tibble)
+require(ggplot2)
+require(Seurat)
+require(cowplot)
+require(kableExtra)
+require(readr)
+require(readxl)
+source("~/Documents/espinozada_lab/r_packages/seurat_helper_functions/seurathelper/R/seurat_helper_functions.R")
+parent.directory <- "/Volumes/SanDiskSSD/bar-or_lab/projects/tonsil_project/analysis/sct_seurat/"
+parent.directory.fastqs <- "/Volumes/SanDiskSSD/bar-or_lab/projects/tonsil_project/raw_data/cellranger_3_1_0/filtered/"
+```
+
+## A. GC and ASC extraction
+### A.1. Getting cell identifiers from large Seurat object and re-running analysis
+We take our GC and antibody-secreting cell (ASC) identifiers from our orignal Seurat dataset. We then get the information from the original 10X files, only taking the cell identifiers from the GC and ASCs.
+```{r re-extraction of data, eval = FALSE, fig.show = "hold", fig.width = 8}
+load(file = paste0(parent.directory, "sct_cluster_metadata.RData"))
+GCPC_metadata %>%
+  filter(parent_cluster != "B PLCG2") -> GCPC_metadata
+list_identifiers <- c("TC124.1", "TC124.2", "TC124.3", "TC125", "TC126")
+cell_barcodes_list <- lapply(1:length(list_identifiers), function(i){
+  GCPC_metadata %>%
+    filter(orig_ident == list_identifiers[i]) %>%
+    select(identifier) %>%
+    mutate(raw_barcode = sub(paste0(list_identifiers[i], "_"), "", identifier)) %>%
+    pull(raw_barcode) -> raw_barcodes
+  return(raw_barcodes)
+})
+TC124.1.data <- Read10X(data.dir = paste0(parent.directory.fastqs, "Amit1"), strip.suffix = TRUE)
+TC124.2.data <- Read10X(data.dir = paste0(parent.directory.fastqs, "Amit7"), strip.suffix = TRUE)
+TC124.3.data <- Read10X(data.dir = paste0(parent.directory.fastqs, "Amit8"), strip.suffix = TRUE)
+TC125.data <- Read10X(data.dir = paste0(parent.directory.fastqs, "Amit2"), strip.suffix = TRUE)
+TC126.data <- Read10X(data.dir = paste0(parent.directory.fastqs, "Amit3"), strip.suffix = TRUE)
+
+B.names <- c("TC124.1", "TC124.2", "TC124.3", "TC125", "TC126")
+B.list <- list(TC124.1.data, TC124.2.data, TC124.3.data, TC125.data, TC126.data)
+rm(list = ls()[grepl(".data", ls(), fixed = TRUE)])
+
+B.list <- lapply(1:length(B.list), function(i){
+  B.list[[i]] <- B.list[[i]][,cell_barcodes_list[[i]]]
+  colnames(B.list[[i]]) <- paste0(B.names[i], "_", colnames(B.list[[i]]))
+  return(CreateSeuratObject(B.list[[i]], project = B.names[[i]], min.cells = 3, min.features = 200))
+})
+```
+
+
+### A.2. Re-run SCTransform normalization and integration
+Now that we have our new Seurat objects, we will add metadata and then will re-perform our SCTransform normalization and the Seurat v3 integration algorithm.
+```{r re-add important information and normalization, eval = FALSE}
+read_excel("~/Documents/bar-or_lab/projects/tonsil_project/analysis/supplementary_information/dissociation_genes.xlsx") %>% select('Human ID') %>% na.omit %>% pull("Human ID") -> dissociation.genes
+
+for(i in 1:length(B.list)){
+  temp.dissoc.genes <- dissociation.genes[dissociation.genes %in% rownames(B.list[[i]])]
+  B.list[[i]][["percent.dissoc"]] <- PercentageFeatureSet(B.list[[i]], features = temp.dissoc.genes)
+  B.list[[i]][["percent.mt"]] <- PercentageFeatureSet(B.list[[i]], pattern = "^MT-")
+  B.list[[i]][["donor"]] <- substring(B.list[[i]]$orig.ident, 1, 5)
+}
+#This removes the unused data thus far
+rm(i, temp.dissoc.genes)
+
+B.list <- list(merge(x = B.list[[1]], y = B.list[2:3]), B.list[[4]], B.list[[5]])
+B.list <- lapply(1:length(B.list), function(i){
+  return(SCTransform(B.list[[i]], verbose = TRUE))
+})
+B.features <- SelectIntegrationFeatures(object.list = B.list, nfeatures = 3000)
+B.list <- PrepSCTIntegration(object.list = B.list, anchor.features = B.features, verbose = TRUE)
+B.anchors <- FindIntegrationAnchors(object.list = B.list, normalization.method = "SCT", anchor.features = B.features, dims = 1:40, verbose = TRUE)
+B.gcpc <- IntegrateData(anchorset = B.anchors, normalization.method = "SCT", dims = 1:40, verbose = TRUE) 
+save(B.gcpc, GCPC_metadata, file = paste0(parent.directory, "sct_gcpc_integrated.RData"))
+```
+
+
+### A.3. Re-run PCA, UMAP, and Louvain clustering on smaller dataset.
+We perform PCA and UMAP and Louvain clustering just as before. We will also perform Louvain clustering at a single resolution, followed by scoring of specific gene sets just as in the original Seurat dataset.
+```{r PCA and UMAP, eval = FALSE}
+load(file = paste0(parent.directory, "sct_gcpc_integrated.RData"))
+B.gcpc[["SCT"]] <- NULL
+IG.genes <- grep("^IGL|^IGK|^IGHV", B.gcpc@assays$integrated@var.features, value = TRUE)
+B.gcpc@assays$integrated@var.features <- setdiff(B.gcpc@assays$integrated@var.features, c(IG.genes))
+B.gcpc <- RunPCA(B.gcpc, npcs = 50, verbose = TRUE)
+dims.to.use <- 1:30
+B.gcpc <- BuildAnnoyUMAP(B.gcpc,
+                         reduction = "pca",
+                         metric = "euclidean",
+                         dims = dims.to.use,
+                         reduction_name = "pca_UMAP",
+                         reduction_key = "pcaumap_",
+                         return_graphs = TRUE)
+DefaultAssay(B.gcpc) <- "RNA"
+B.gcpc <- NormalizeData(B.gcpc)
+
+B.gcpc <- FindClusters(B.gcpc, resolution = 0.7, graph.name = "annoy_nn_snn")
+B.gcpc$previous_idents <- plyr::mapvalues(rownames(B.gcpc@meta.data), from = GCPC_metadata$identifier, to = as.character(GCPC_metadata$parent_cluster))
+
+save(B.gcpc, file = paste0(parent.directory,"sct_seurat_gcpc_clustered.RData"))
+```
+
+### A.4. Finding marker genes for the new clusters.
+We use the Seurat `FindAllMarkers` function and `SoupX` to find two sets of marker genes for our new clusters.
+```{r finding markers, eval = FALSE}
+GCPC_RNA_markers <- FindAllMarkers(B.gcpc, assay = "RNA", logfc.threshold = 0.3, test.use = "LR", verbose = TRUE, only.pos = FALSE, latent.vars = "donor")
+GCPC_SoupX_markers <- SoupX::quickMarkers(B.gcpc[["RNA"]]@data, B.gcpc$seurat_clusters, N = 20)
+save(GCPC_RNA_markers, GCPC_SoupX_markers, file = paste0(parent.directory, "sct_seurat_gcpc_markers.RData"))
+```
+
+## B. Data visualization
+### B.1 Cluster visualization full
+We can now visualize the new clusters and the previous clusters.
+
+```{r plots 1, eval = TRUE, include = TRUE, results = "hide", fig.show = "hold", fig.width = 8, fig.height = 6}
+load(paste0(parent.directory,"sct_seurat_gcpc_clustered.RData"))
+load(paste0(parent.directory,"sct_seurat_gcpc_markers.RData"))
+DimPlot(B.gcpc, reduction = "pca_UMAP", label = TRUE, label.size = 5, label.box = TRUE, pt.size = 0.8, group.by = "previous_idents")
+DimPlot(B.gcpc, reduction = "pca_UMAP", label = TRUE, label.size = 5, label.box = TRUE, pt.size = 0.8)
+```
+
+
+### B.2 SoupX markers{.tabset}
+We will visualize the SoupX markers here.
+```{r soupx markers, eval = TRUE, include = TRUE, results = "hide"}
+cluster_list <- sort(unique(B.gcpc$seurat_clusters))
+n_clusters <- length(cluster_list)
+mrks <- SoupX::quickMarkers(B.gcpc[["RNA"]]@data, B.gcpc$seurat_clusters, N = 20)
+mrks_list <- lapply(cluster_list, function(i){
+ mrks %>%
+   dplyr::filter(cluster == i) %>%
+   dplyr::pull(gene)
+})
+dotplot_list <- lapply(1:n_clusters, function(i) {
+  cluster_name <- cluster_list[i]
+  temp.slot <- paste0("Cluster ", cluster_name)
+  if(length(mrks_list[[{{i}}]]) == 0){return(NULL)}
+  src <- c("#### {{temp.slot}} {.unnumbered}",
+           "```{r soupdotplot-{{i}}, fig.width = 12, fig.height = 6}",
+           "DotPlot(B.gcpc, features = mrks_list[[{{i}}]], assay = \"RNA\")+RotatedAxis()",
+           "```",
+           "")
+  knit_expand(text = src)
+})
+out <- knit_child(text = unlist(dotplot_list), options = list(echo = FALSE, cache = FALSE))
+
+```
+`r out`
+
+
+### B.3 Seurat markers {.tabset}
+```{r viz genes, eval=T, results="hide"}
+DefaultAssay(B.gcpc) <- "RNA"
+cluster_list <- levels(GCPC_RNA_markers$cluster)
+n_clusters <- length(cluster_list)
+gene_list <- lapply(cluster_list, function(i){
+  GCPC_RNA_markers %>%
+    dplyr::filter(p_val_adj < 0.01) %>%
+    dplyr::filter(cluster == i) %>%
+    dplyr::top_n(20, wt = avg_log2FC) %>%
+    dplyr::pull(gene)
+})
+dotplot_list <- lapply(1:n_clusters, function(i) {
+  cluster_name <- cluster_list[i]
+  temp.slot <- paste0("Cluster ", cluster_name)
+  if(length(gene_list[[i]]) == 0 ){
+    return(NULL)
+  }
+  src <- c("#### {{temp.slot}} {.unnumbered}",
+           "```{r dotplot-{{i}}, fig.width = 12, fig.height = 6}",
+           "DotPlot(B.gcpc, features = gene_list[[{{i}}]])+RotatedAxis()+scale_color_viridis_c(direction = -1, option = \"A\")",
+           "```",
+           "")
+  knit_expand(text = src)
+})
+out <- knit_child(text = unlist(dotplot_list), options = list(echo = FALSE, cache = FALSE))
+```
+`r out`
+
+
+### B.4 Exploring marker genes for each cluster {.tabset}
+We include tables of the marker genes found in each cluster.
+```{r marker-cluster tables, results="hide", eval=TRUE}
+
+cluster_vector <- levels(B.gcpc@active.ident)
+n_clusters <- length(cluster_vector)
+
+markers.list <- lapply(1:n_clusters, function(i) {
+  GCPC_RNA_markers %>%
+    dplyr::filter(cluster == cluster_vector[i] & p_val_adj < 0.01) %>%
+    dplyr::arrange(-avg_log2FC) %>%
+    dplyr::select(cluster, gene, avg_log2FC, p_val, p_val_adj) %>%
+    dplyr::mutate_if(is.numeric, format, digits = 3)
+})
+
+names(markers.list) <- paste("Cluster", cluster_vector)
+markers.list <- c(markers.list, "ALL" = list(GCPC_RNA_markers %>%  dplyr::arrange(-avg_log2FC) %>% select(cluster, gene, avg_log2FC, p_val, p_val_adj) %>% mutate_if(is.numeric, format, digits = 3)))
+
+src_list <- lapply(1:(n_clusters+1), function(i) {
+  if(i == (n_clusters+1)){
+    label <- "ALL"
+  } else {
+    label <- cluster_vector[i]
+  }
+  src <- c("#### {{label}} {.unnumbered} ",
+           "<div style = \"width:65%; height:auto; align:left\">",
+           "```{r marker-cluster-{{label}}, fig.width=3}",
+           "DT::datatable(markers.list[[{{i}}]], rownames = FALSE)",
+           "```",
+           "</div>",
+           "")
+  knit_expand(text = src)
+})
+out <- knit_child(text = unlist(src_list), options = list(echo = FALSE, cache = FALSE))
+```
+`r out`
+
+### B.5 Cluster renaming
+The cluster identities remain largely the same as before. 
+```{r cluster renaming, eval = FALSE}
+#load(file = paste0(parent.directory, "sct_seurat_gcpc_clustered.RData"))
+cluster_levels <- paste0("C",c(1,8,4,12,7,6,2,10,9,5,3,11,0))
+cluster_names <- c("GC 1",
+                   "GC 2",
+                   "GC 3",
+                   "GC IgA",
+                   "LZ",
+                   "DZ 1",
+                   "DZ 2",
+                   "DZ 3", 
+                   "DZ 4",
+                   "DZ 5",
+                   "GC LMO2",
+                   "ASC IgM",
+                   "ASC IgG")
+B.gcpc$new_clusters_nums <- factor(paste0("C", as.character(B.gcpc$annoy_nn_snn_res.0.7)),
+                                   levels = cluster_levels)
+B.gcpc$cluster_names <- plyr::mapvalues(B.gcpc$new_clusters_nums,
+                                        from = cluster_levels,
+                                        to = cluster_names)
+Idents(B.gcpc) <- "cluster_names"
+DimPlot(B.gcpc, label = TRUE, label.box = TRUE, repel = TRUE, cols = c("dodgerblue", "forestgreen", RColorBrewer::brewer.pal(11, "Set3")))+NoLegend()
+save(B.gcpc, file = paste0(parent.directory, "sct_seurat_gcpc_named_clusters.RData"))
+```
+```{r plot new idents, eval = TRUE, fig.width = 8, fig.height=6}
+load(file = paste0(parent.directory, "sct_seurat_gcpc_named_clusters.RData"))
+DimPlot(B.gcpc, label = TRUE, label.box = TRUE, repel = TRUE, cols = c("dodgerblue", "forestgreen", RColorBrewer::brewer.pal(11, "Set3")))+NoLegend()
+```
+
+
+### B.5 Geneset VlnPlot
+We can use some genesets for each cluster to visualize our data.
+```{r geneset VlnPlot, eval = FALSE, fig.height=6, fig.width=12}
+features.of.interest <- c("DZ.Score1", "LZ.Score1", "CD40.signalling1", "MYC.signature1", "G2M.Score", "S.Score", "BCR_stim1", "CD40_stim2", "percent.mt", "percent.dissoc")
+VlnPlot(B.gcpc, features = features.of.interest, assay = "RNA", pt.size = 0)
+
+```
+
+
+### B.6 Cluster identity mapping
+We can use some genesets for each cluster to visualize our data.
+```{r cluster identity mapping, eval = FALSE}
+B.gcpc@meta.data %>%
+  select(cluster_names, previous_idents) %>%
+  set_colnames(c("new_idents", "previous_idents")) %>%
+  group_by(new_idents, previous_idents) %>%
+  summarize(freq = n()) %>%
+  mutate(proport = freq/sum(freq)) %>%
+  mutate(new_idents = factor(new_idents, levels = levels(B.gcpc$cluster_names))) %>% 
+  ggplot(aes(x = new_idents, y = proport, fill = previous_idents))+
+  geom_col(position = "stack", color = 'black')+
+  theme(axis.text.x=element_text(angle = 45, hjust = 1))+
+  scale_fill_manual(values = c(RColorBrewer::brewer.pal(11, "Set3")))
+
+B.gcpc@meta.data %>%
+  select(cluster_names, previous_idents) %>%
+  set_colnames(c("new_idents", "previous_idents")) %>%
+  group_by(previous_idents, new_idents) %>%
+  summarize(freq = n()) %>%
+  mutate(proport = freq/sum(freq)) %>%
+  mutate(previous_idents = factor(previous_idents, levels = sort(unique(B.gcpc$previous_idents)))) %>% 
+  ggplot(aes(x = previous_idents, y = proport, fill = new_idents))+
+  geom_col(position = "stack", color = 'black')+
+  theme(axis.text.x=element_text(angle = 45, hjust = 1))+
+  scale_fill_manual(values = c(RColorBrewer::brewer.pal(12, "Set3"), "lightblue", "darkgreen"))
+
+```
+
+#### h5ad for scanpy
+We create an h5ad file of the RNA assay for use in scanpy and PAGA.
+```{r scanpy, eval = FALSE}
+var_genes <- B.gcpc[["integrated"]]@var.features
+B.gcpc[["RNA"]]@meta.features["highly_variable"] <- rownames(B.gcpc[["RNA"]]@meta.features) %in% var_genes
+sceasy::convertFormat(B.gcpc, from="seurat", to="anndata", outFile= paste0(parent.directory, "sct_seurat_gcpc_clustered.h5ad"), main_layer = "counts", transfer_layers = "data")
+dir.create(paste0(parent.directory, "/graphs_gcpc/"))
+Matrix::writeMM(obj = B.gcpc@graphs$annoy_fuzzy, file = paste0(parent.directory, "/graphs_gcpc/fuzzy.mtx"))
+Matrix::writeMM(obj = B.gcpc@graphs$annoy_nn_cosine, file = paste0(parent.directory, "/graphs_gcpc/cosine.mtx"))
+
+```

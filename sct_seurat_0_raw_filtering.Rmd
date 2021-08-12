@@ -1,0 +1,147 @@
+---
+title: "Tonsil Unstimulated B cell scRNA-seq Preprocessing"
+subtitle: "Seurat extraction of 10X files and filtering"
+author: "Diego A. Espinoza"
+date: Last compiled on `r format(Sys.Date(), "%d %B %Y")`
+output:
+  html_document:
+    code_folding: show
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r echo=TRUE, message=FALSE, results='hide', warning=FALSE}
+require(magrittr)
+require(knitr)
+require(dplyr)
+require(tidyr)
+require(tibble)
+require(ggplot2)
+require(Seurat)
+require(kableExtra)
+require(cowplot)
+require(readr)
+require(readxl)
+```
+
+## A. Introduction
+### Experimental Design
+This study aims to recharacterize the tonsilar B cell compartment in order to better identify differentiation pathways and the existence of different cell subtypes within the tonsils and other lymphoid tissues. Briefly, CD19+/CD3-/CD14- B cells were sorted from human tonsilar tissue and then used for 10X Genomics scRNA-sequencing. There are 5 samples as follows:
+
+```{r echo = FALSE, results = "asis", message = FALSE}
+donor_color_pal <- RColorBrewer::brewer.pal(5, "Set3")
+experimental_design <- tibble(Donor = c("Donor TC124", "Donor TC124", "Donor TC124", "Donor TC125", "Donor TC126"),
+                              Replicate = c(1, 2, 3, 1, 1),
+                              "Sample\nNumber" = c(1, 7, 8, 2, 3))
+kable(experimental_design, title = "Experimental Design", align = "c", bootstrap_options = c("condensed")) %>%
+  kable_styling(full_width = FALSE, position = "left") %>%
+  row_spec(1, color = "black", background = donor_color_pal[1]) %>%
+  row_spec(2, color = "black", background = donor_color_pal[2]) %>%
+  row_spec(3, color = "black", background = donor_color_pal[3]) %>%
+  row_spec(4, color = "black", background = donor_color_pal[4]) %>%
+  row_spec(5, color = "black", background = donor_color_pal[5])
+
+```
+
+### Preparing the raw data for Seurat
+We will now begin by loading in the raw counts for the 5 experimental samples above. This is accomplished by the Read10X function of the Seurat package. Next, Seurat objects must be created. In order to conserve memory, we will also eliminate the prior "*.data" files. The objects are created such that each gene/RNA will only be kept if present in 3 or more cells, and each cell will only be kept if it express at least 200 unique RNAs. 
+```{r loading data, eval = FALSE, include = TRUE, results = "hide", warning = FALSE}
+#First, we load in the data using Read10X
+TC124.unstim.1.data <- Read10X(data.dir = "/Volumes/SanDiskSSD/bar-or_lab/projects/tonsil_project/raw_data/cellranger_3_1_0/filtered/Amit1/", strip.suffix = TRUE)
+TC124.unstim.2.data <- Read10X(data.dir = "/Volumes/SanDiskSSD/bar-or_lab/projects/tonsil_project/raw_data/cellranger_3_1_0/filtered/Amit7/", strip.suffix = TRUE)
+TC124.unstim.3.data <- Read10X(data.dir = "/Volumes/SanDiskSSD/bar-or_lab/projects/tonsil_project/raw_data/cellranger_3_1_0/filtered/Amit8/", strip.suffix = TRUE)
+TC125.unstim.data <- Read10X(data.dir = "/Volumes/SanDiskSSD/bar-or_lab/projects/tonsil_project/raw_data/cellranger_3_1_0/filtered/Amit2/", strip.suffix = TRUE)
+TC126.unstim.data <- Read10X(data.dir = "/Volumes/SanDiskSSD/bar-or_lab/projects/tonsil_project/raw_data/cellranger_3_1_0/filtered/Amit3/", strip.suffix = TRUE)
+
+B.names <- c("TC124.1", "TC124.2", "TC124.3", "TC125", "TC126")
+B.list <- list(TC124.unstim.1.data, TC124.unstim.2.data, TC124.unstim.3.data, TC125.unstim.data, TC126.unstim.data)
+
+B.list <- lapply(1:length(B.list), function(i){
+  colnames(B.list[[i]]) <- paste0(B.names[i], "_", colnames(B.list[[i]]))
+  return(CreateSeuratObject(B.list[[i]], project = B.names[[i]], min.cells = 3, min.features = 200))
+})
+
+rm(list = ls()[grepl(".data", ls())])
+
+```
+
+### Addition of gene information
+In addition, we add the "percent.mt" information to each cell in each dataset, which details what percentage of the molecular counts are derived from mitochondrial genes. Because our samples are FACS-derived, we also determine the percentage of molecular counts being derived from dissociation-induced genes (van den Brink, et al. Single-cell sequencing reveals dissociation-induced gene expression in tissue subpopulations. Nat Methods 2017).
+```{r supplementary information, eval = FALSE}
+read_excel("~/Documents/bar-or_lab/projects/tonsil_project/analysis/supplementary_information/dissociation_genes.xlsx") %>% select('Human ID') %>% na.omit %>% pull("Human ID") -> dissociation.genes
+
+for(i in 1:length(B.list)){
+  temp.dissoc.genes <- dissociation.genes[dissociation.genes %in% rownames(B.list[[i]])]
+  B.list[[i]][["percent.dissoc"]] <- PercentageFeatureSet(B.list[[i]], features = temp.dissoc.genes)
+  B.list[[i]][["percent.mt"]] <- PercentageFeatureSet(B.list[[i]], pattern = "^MT-")
+  B.list[[i]][["donor"]] <- substring(B.list[[i]]$orig.ident, 1, 5)
+}
+
+#This removes the unused data thus far
+rm(i, temp.dissoc.genes)
+
+save(B.list, file = "/Volumes/SanDiskSSD/bar-or_lab/projects/tonsil_project/analysis/all_preprocessing_310/raw_Seurat_object_list.RData")
+
+```
+
+## B. Preprocessing
+### Scatter Plots
+Here we can visualize the percent.mt, percent.dissoc, and nFeature_RNA as a function of nCount_RNA
+```{r scatter plots, eval = TRUE, include = TRUE, results = "hide", warning = FALSE, fig.height=18, fig.width=12}
+load("/Volumes/SanDiskSSD/bar-or_lab/projects/tonsil_project/analysis/all_preprocessing_310/raw_Seurat_object_list.RData")
+
+donor_color_pal <- RColorBrewer::brewer.pal(5, "Set3")
+
+lapply(1:length(B.list), function(i){
+  temp.sc.1 <- FeatureScatter(B.list[[i]], feature1 = "nCount_RNA", feature2 = "percent.mt", cols = donor_color_pal[i], pt.size = 0.5)+NoLegend()
+  temp.sc.2 <- FeatureScatter(B.list[[i]], feature1 = "nCount_RNA", feature2 = "percent.dissoc", cols = donor_color_pal[i], pt.size = 0.5)+NoLegend()
+  temp.sc.3 <- FeatureScatter(B.list[[i]], feature1 = "nCount_RNA", feature2 = "nFeature_RNA", cols = donor_color_pal[i], pt.size = 0.5)
+  temp.sc.plots <- CombinePlots(list(temp.sc.1, temp.sc.2, temp.sc.3), ncol = 3)
+}) -> sc.plotlist
+
+plot_grid(plotlist = sc.plotlist, ncol = 1)
+
+```
+
+
+### Violin Plots
+Next, we create violin plots showing the distribution of number of RNAs detected and the actual numbers of molecules detected. We filter out cells here by filtering out data points with extraneously high RNA or molecule content, as these are likely to contain doublets (or multiplets) that were captured by a single droplet. We also filter out cells with high mitochondrial gene content as these are likely to be dead or dying cells.
+```{r VlnPlot, eval = TRUE, include = TRUE, results = "hide", warning = FALSE, fig.height=18, fig.width=12}
+
+vln_theme <- list(labs(x = NULL), NoLegend(), theme(title = element_text(size = 10), axis.text.x = element_text(angle = 0, size = 10, hjust = 0.5)))
+
+filters.nFeature_RNA.hi <- 3500
+filters.percent.mt <- 5
+filters.percent.dissoc <- 4
+filters.all <- c(filters.nFeature_RNA.hi, NA, filters.percent.mt, filters.percent.dissoc)
+
+lapply(1:length(B.list), function(i){
+  temp.vln.plots <- VlnPlot(B.list[[i]], features = c("nFeature_RNA", "nCount_RNA", "percent.mt", "percent.dissoc"), combine = FALSE, cols = donor_color_pal[i], pt.size = 0.001, log = TRUE)
+  temp.vln.plots <- lapply(1:length(temp.vln.plots), function(i){
+    g <- temp.vln.plots[[i]]+
+      vln_theme+
+      geom_hline(yintercept = filters.all[i], color = "red")
+    return(g)})
+  temp.vln.plots <- CombinePlots(temp.vln.plots, ncol = 4)
+}) -> vln.plotlist
+
+plot_grid(plotlist = vln.plotlist, ncol = 1)
+```
+
+
+Here, we subset the Seurat objects based on the number of unique RNAs they express, the percent of UMIs derived from mitochondrial genes, and the percent of UMIs derived from dissociating-associated genes.
+```{r subsetting, eval = FALSE}
+
+B.list <- lapply(1:length(B.list), function(i){
+  return(subset(B.list[[i]], subset = nFeature_RNA < filters.nFeature_RNA.hi & percent.mt < filters.percent.mt & percent.dissoc < filters.percent.dissoc))
+})
+
+save(B.list, file = "/Volumes/SanDiskSSD/bar-or_lab/projects/tonsil_project/analysis/all_preprocessing_310/processed_Seurat_object_list.RData")
+```
+
+## C. Next steps
+### Dimensionality reduction and cluster identification
+We now have our processed Seurat objects and can proceed to downstream analyses.
+

@@ -1,0 +1,605 @@
+---
+title: "Tonsil Unstimulated B cell scRNA-seq"
+subtitle: "Part 5: Figures"
+author: "Diego A. Espinoza"
+date: Last compiled on `r format(Sys.Date(), "%d %B %Y")`
+output:
+  html_document:
+    code_folding: hide
+    fig_caption: yes
+    df_print: paged
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(autodep        = TRUE,
+                      echo           = TRUE,
+                      error          = FALSE,
+                      fig.height     = 8,
+                      message        = FALSE,
+                      warning        = FALSE)
+```
+
+```{r echo=TRUE, message=FALSE, results='hide', warning=FALSE}
+require(magrittr)
+require(knitr)
+require(dplyr)
+require(tidyr)
+require(tibble)
+require(ggplot2)
+require(Seurat)
+require(cowplot)
+require(kableExtra)
+require(readr)
+require(readxl)
+require(patchwork)
+require(Nebulosa)
+require(clusterProfiler)
+require(ggupset)
+require(pals)
+source("/Users/diegoespinoza/Documents/espinozada_lab/r_packages/seurat_helper_functions/seurathelper/R/seurat_helper_functions.R")
+parent.directory <- "/Volumes/SanDiskSSD/bar-or_lab/projects/tonsil_project/analysis/sct_seurat/"
+figure_directory <- "/Users/diegoespinoza/Documents/bar-or_lab/projects/tonsil_project/manuscript/figures_20210812/"
+dir.create(figure_directory)
+rerun_analysis <- FALSE
+
+feature_size <- 6
+
+cluster_heatmap <- function(my_data_frame, clusters = 3, max_zed = 3, plot_rownames = FALSE, color_brewer = "Set1", label_features = NULL, y_text_size = 10, get_clusters = FALSE, dist_method = "euclidean"){
+  my_data_frame <- as.data.frame(t(scale(t(my_data_frame))))
+  my_data_frame[my_data_frame > max_zed] <- max_zed
+  my_data_frame[my_data_frame < -max_zed] <- -max_zed
+  hclust_results <- hclust(dist(my_data_frame, method = dist_method))
+  gene_order <- hclust_results$labels[hclust_results$order]
+  cluster_results <- data.frame(cluster= cutree(hclust_results, k = clusters))
+  cluster_results$cluster <- as.factor(cluster_results$cluster)
+  cluster_results$gene <- rownames(cluster_results)
+  cluster_results$gene <- factor(cluster_results$gene, levels = gene_order)
+  if(get_clusters){
+    return(cluster_results)
+  }
+  my_data_frame_long <- pivot_longer(my_data_frame %>% rownames_to_column(var = "gene"), -gene, values_to = "Z_sc", names_to = "pseudotime")
+  my_data_frame_long$gene <- factor(my_data_frame_long$gene, levels = gene_order)
+  my_data_frame_long$pseudotime <- factor(my_data_frame_long$pseudotime, levels = colnames(my_data_frame))
+  my_labels <- ifelse(gene_order %in% label_features, gene_order, "")
+  g_heatmap <- ggplot(my_data_frame_long, aes(x = pseudotime, y = gene, fill = Z_sc))+
+    geom_tile()+
+    scale_fill_viridis_c()+
+    ylab(NULL)+
+    scale_y_discrete(position = "right", expand = c(0.01, 0.01), labels = my_labels, breaks = my_labels)+
+    theme(axis.text.x = element_blank(), axis.ticks.x = element_blank() , plot.margin = margin(l = 0), panel.background = element_rect(color = "white"), axis.text.y = element_text(size = y_text_size), legend.position = "bottom")
+  g_dendro <- ggdendro::ggdendrogram(data = hclust_results)+
+    scale_y_reverse(expand = c(0.01,0.01))+
+    coord_flip()+
+    theme(axis.text.y = element_blank(), axis.text.x = element_blank(), plot.margin = margin(r = 0))+scale_x_discrete(expand = c(0.01,0.01))
+  g_clusters <- ggplot(cluster_results, aes(x = 1, y = gene, fill = cluster))+
+    geom_tile()+
+    scale_fill_manual(values = RColorBrewer::brewer.pal(clusters,color_brewer))+
+    scale_y_discrete(position = "right", expand = c(0.01, 0.01), labels = NULL)+
+    theme(axis.text.x = element_blank(), axis.ticks = element_blank() , plot.margin = margin(l = 0, r = 0), panel.background = element_rect(color = "white"), legend.position = "bottom")+
+    ylab(NULL)+
+    xlab("")
+  (g_dendro | g_clusters | g_heatmap) + patchwork::plot_layout(widths = c(0.9,0.1,2), guides = "collect")&theme(legend.position = "bottom", legend.text = element_text(size = y_text_size * 0.75), legend.title = element_text(size = y_text_size * 0.75), legend.key.size = unit(0.2, "cm"))
+}
+
+plot_gam_auc <- function(seurat_object, smoothed_values, chosen_feature, pseudotime_var = "pt_target_curve_trimmed", cluster_choice = "cluster_names", assay = "regulons", cluster_cols = NULL, point_size = 1){
+  smoothed_values_subset <- dplyr::filter(smoothed_values, geneset == chosen_feature)
+  feature_val <- FetchData(seurat_object, vars = chosen_feature)
+  temp_df <- FetchData(seurat_object, vars = c(pseudotime_var, cluster_choice))
+  temp_df <- cbind(feature_val, temp_df)
+  colnames(temp_df) <- c("feature_val", "pseudotime", "cluster")
+  temp_df <- dplyr::filter(temp_df, !is.na(pseudotime))
+  g <- ggplot(temp_df, aes(x = pseudotime, y = feature_val, color = cluster))+
+    geom_point(size = point_size)+
+    geom_path(data = smoothed_values_subset, aes(x = impute_pseudotime, y = impute_auc, group = geneset), inherit.aes = FALSE, size = 2)+
+    cowplot::theme_cowplot()
+  if(!is.null(cluster_cols)){
+    g <- g + scale_color_manual(values = cluster_cols)
+  }
+  g
+}
+
+```
+
+### Figure 1
+```{r new clust idents, eval = TRUE, fig.width=12, fig.height=8}
+load(file = paste0(parent.directory, "sct_reguloned.RData"))
+load(file = paste0(parent.directory, "markers.RData"))
+B.combined$cluster_names <- forcats::fct_recode(B.combined$cluster_names, "Naive IER" = "Naive IER2",  "Activated 1" = "Activated", "Activated 2" = "Activated NME1")
+
+B_RNA_markers$cluster_names <- factor(plyr::mapvalues(paste0("C", B_RNA_markers$cluster),
+                                                      from = levels(B.combined$new_clusters_nums),
+                                                      to = levels(B.combined$cluster_names)), levels = levels(B.combined$cluster_names))
+
+#fixing names
+#
+
+DefaultAssay(B.combined) <- "RNA"
+Idents(B.combined) <- "cluster_names"
+dim(B.combined)
+table(B.combined$orig.ident)
+
+#color palettes here because I am incredibly too lazy to learn Adobe Illustrator...
+color_palette <- c("grey", "grey50", RColorBrewer::brewer.pal(12, "Paired"), "black", RColorBrewer::brewer.pal(9, "Set3"), "lightblue")
+color_table <- data.frame(idents = factor(levels(Idents(B.combined)),
+                                          levels = levels(Idents(B.combined))),
+                          my_cols = factor(color_palette,
+                                           levels = color_palette))
+# color_table$idents <- forcats::fct_recode(color_table$idents,
+#                                           "B *EIF5A*" = "B EIF5A",
+#                                           "B *LY9*" = "B LY9",
+#                                           "Memory *LGALS1*" = "Memory LGALS1",
+#                                           "Memory *LGALS3*" = "Memory LGALS3",
+#                                           "GC *LMO2*" = "GC LMO2",
+#                                           "B *PLCG2*" = "B PLCG2")
+legend_theme <- theme(legend.text = ggtext::element_markdown(size = 8),
+                      legend.title = element_text(size = 8, face = "bold"),
+                      legend.key.size = unit(5, "pt"),
+                      legend.spacing.y = unit(0.01, "pt"))
+legend_nonGC <- get_legend(ggplot(color_table[1:15,], aes(x= idents, y = 1, color = my_cols))+
+  geom_point(size = 1)+
+  theme_cowplot()+
+  legend_theme+
+  scale_color_identity("non-GC clusters", guide = "legend", labels = color_table$idents[1:15]))
+legend_GCASC <- get_legend(ggplot(color_table[16:25,], aes(x= idents, y = 1, color = my_cols))+
+  geom_point(size = 1)+
+  theme_cowplot()+
+  legend_theme+
+  scale_color_identity("GC and ASC clusters", guide = "legend", labels = color_table$idents[16:25]))
+full_legend <- plot_grid(NULL, legend_nonGC, legend_GCASC, NULL, ncol = 1, rel_heights = c(0.7,1,1,0.7))
+
+
+base_dimplot <- DimPlot(B.combined,
+                        group.by = "cluster_names",
+                        label = FALSE,
+                        label.box = TRUE,
+                        reduction = "pca_UMAP",
+                        label.size = 1,
+                        shuffle = TRUE,
+                        cols = color_palette,
+                        label.color = "white", repel = TRUE)+
+  NoLegend()+
+  ggtitle("")+
+  xlab("UMAP_1")+
+  ylab("UMAP_2")+
+  geom_segment(x = -7, y = 5.5, xend = 2,  yend = 5.5)+
+  geom_segment(x = -7, y = 5.5, xend = -7,  yend = 5)+
+  geom_segment(x = 2, y = 5.5, xend = 2,  yend = 5)+
+  annotate("text", label = "non-GC cells", x = -2.5, y = 6.5)+
+  geom_segment(x = 8.5, y = 12, xend = 8.5,  yend = 4)+
+  geom_segment(x = 8, y = 12, xend = 8.5,  yend = 12)+
+  geom_segment(x = 8, y = 4, xend = 8.5,  yend = 4)+
+  annotate("text", label = "GC cells", x = 10, y = 8)+
+  geom_segment(x = 6.5, y = 2, xend = 10.5,  yend = -4)+
+  annotate("text", label = "ASCs", x = 8, y = -2)
+base_dimplot <- plot_grid(base_dimplot, full_legend, ncol = 2, rel_widths = c(1, 0.2))
+
+
+label_size <- 6
+fplot_theme <- theme(axis.text.x = element_text(size = label_size), 
+                     axis.title = element_text(size = label_size), 
+                     axis.text.y = element_text(size = label_size), 
+                     plot.title = ggtext::element_markdown(),
+                     legend.text = element_text(size = label_size * .75), 
+                     legend.title = element_text(size = label_size * .75),
+                     legend.key.width = unit(5, "pt"),
+                     legend.key.height = unit(10, "pt"))
+fplot_nonGC <- plot_density(B.combined, "CCR7", reduction = "pca_UMAP")+
+  xlab("UMAP_1")+ylab("UMAP_2")+fplot_theme+ggtitle("*CCR7*")
+fplot_GC <- plot_density(B.combined, "CD38", reduction = "pca_UMAP")+
+  xlab("UMAP_1")+ylab("UMAP_2")+fplot_theme+ggtitle("*CD38*")
+fplot_ASC <- plot_density(B.combined, "PRDM1", reduction = "pca_UMAP")+
+  xlab("UMAP_1")+ylab("UMAP_2")+fplot_theme+ggtitle("*PRDM1*")
+fplots <- cowplot::plot_grid(fplot_nonGC, fplot_GC, fplot_ASC, ncol = 3)
+
+label_size <- 6
+chosen_dotplot_features <- rev(c("CCR7", "CD38", "IGHD", "HVCN1", "FCMR", "SELL", "FCER2","CD69", "IER2", "FOS", "JUNB", "IFI44L", "ISG15", "APOBEC3C", "EIF5A", "LY9", "TNFRSF13B", "CD27","IGHA1", "IGHA2", "LGALS1", "LGALS3", "CD83", "MIR155HG", "NME1", "MYC", "CCL4", "CCL3", "RGS13", "AICDA", "STMN1", "TK1", "MKI67",  "BCL2A1", "FCRL5", "LMO2", "XBP1", "JCHAIN", "MZB1", "PRDM1", "IGHM", "IGHG1", "IGHG2", "PLCG2"))
+markers_to_highlight <- B_RNA_markers %>% dplyr::rename(features.plot = gene, id = cluster_names)  %>% filter((p_val_adj < 0.01) & (avg_log2FC > 0.3) &(features.plot %in% chosen_dotplot_features))
+dotplot_theme <- theme(axis.text.x = element_text(size = label_size), 
+                       axis.text.y = element_text(size = label_size, face = "italic"), 
+                       legend.text = element_text(size = label_size * .75), 
+                       legend.title = element_text(size = label_size * .75),
+                       legend.key.width = unit(5, "pt"),
+                       legend.key.height = unit(10, "pt"))
+base_dotplot <- DotPlot(B.combined, features = chosen_dotplot_features, group.by = "cluster_names", dot.scale = 3)+
+  geom_point(data = markers_to_highlight, shape = 0, aes(x = features.plot, y = id), size = 3, color = "black")+
+  coord_flip()+
+  RotatedAxis()+
+  ylab(NULL)+
+  xlab(NULL)+
+  scale_color_viridis_c(option = "D", direction = -1)+
+  dotplot_theme
+
+DefaultAssay(B.combined) <- "genesetAUC"
+base_heatmap <- DoGenesetHeatmap(B.combined, assay = "genesetAUC", diff_exp_results = diff_exp_genesets, group.by = "cluster_names", scale_rows = TRUE, auc_choice = 0.85, plot_all = FALSE, y_text_size = label_size)
+
+left_plot_1 <- cowplot::plot_grid(NA, base_dimplot, fplots, ncol = 1, rel_heights = c(1,5,2), labels = c("a", "b", "c"))
+right_plot_1 <- cowplot::plot_grid(base_dotplot, NULL, base_heatmap, ncol = 1, rel_heights = c(4,0.15,1), align = "v", axis = "lr", labels = c("d", "e"))
+cowplot::plot_grid(left_plot_1, right_plot_1, rel_widths = c(3,2))
+
+pdf(file = paste0(figure_directory, "Figure1.pdf"), width = 12, height = 8)
+cowplot::plot_grid(left_plot_1, right_plot_1, rel_widths = c(3,2.5))
+dev.off()
+```
+
+
+### Figure 2
+```{r fig 2, eval = TRUE, fig.height=8, fig.width=12}
+
+Idents(B.combined) <- "cluster_names"
+
+fig2a <- DoGenesetHeatmap(B.combined, assay = "regulons", diff_exp_results = diff_exp_regulons, group.by = "cluster_names", scale_rows = TRUE, auc_choice = 0.85, plot_all = FALSE, y_text_size = label_size)
+
+regulon_dataframe <- read.csv("/Volumes/SanDiskSSD/bar-or_lab/projects/tonsil_project/analysis/sct_seurat/aucell/Bint_pyscenic_regulons_merged.csv")
+
+regulon_dataframe %>%
+  dplyr::filter(Targets %in% c("CCL4", "CCL3")) %>%
+  dplyr::mutate(presence = 1) %>%
+  tidyr::pivot_wider(id_cols = TF, names_from = Targets, values_from = presence, values_fill = list(presence = 0)) %>%
+  tidyr::pivot_longer(-TF, names_to = "Targets", values_to = "presence") %>%
+  dplyr::mutate(Targets = factor(Targets, levels = c("CCL4", "CCL3"))) -> chemokine_binary_matrix
+
+fig2b <- ggplot(chemokine_binary_matrix, aes(x = Targets, y = reorder(TF, dplyr::desc(TF)), fill = as.factor(presence)))+
+  geom_tile(color = "black", size = 0.5)+
+  scale_x_discrete(position = "top", expand = c(0,0))+
+  scale_y_discrete(expand = c(0,0))+
+  scale_fill_manual("Presence", values = c("white", "firebrick4"))+
+  theme(axis.ticks.x = element_blank(),
+        axis.text.x = element_text(angle = 45, hjust = 0, face = "italic"),
+        axis.ticks.y = element_blank(),
+        plot.margin = margin(t = 50, b = 50, unit = "pt"),
+        text = element_text(size = 8),
+        legend.key.width = unit(6, "pt"),
+        legend.key.height = unit(3, "pt")
+        )+
+  ylab("Transcription Factor Regulon")
+
+myc_fosl1_rel_df <- regulon_dataframe %>% dplyr::filter(TF %in% c("MYC", "FOSL1", "REL"))
+venn_color_scale <- RColorBrewer::brewer.pal(8, "Set2")[c(1:7)]
+fig2c <- eulerr::euler(combinations = list(
+  MYC = myc_fosl1_rel_df %>% filter(TF=="MYC") %>% select(Targets) %>% unlist(), 
+  FOSL1 = myc_fosl1_rel_df %>% filter(TF=="FOSL1") %>% select(Targets) %>% unlist(),
+  REL = myc_fosl1_rel_df %>% filter(TF=="REL") %>% select(Targets) %>% unlist())) %>%
+  plot(fills = venn_color_scale, quantities = list(type =  "counts"))
+
+hm <- read.gmt(gmtfile = "~/Documents/bar-or_lab/projects/tonsil_project/analysis/supplementary_information/genesets/molsigdb/h.all.v7.1.symbols.gmt")
+TFs_for_enrich <- c("MYC", "FOSL1", "REL")
+
+MYC_genes <- myc_fosl1_rel_df %>% filter(TF=="MYC") %>% select(Targets) %>% unlist()
+FOSL1_genes <- myc_fosl1_rel_df %>% filter(TF=="FOSL1") %>% select(Targets) %>% unlist()
+REL_genes <- myc_fosl1_rel_df %>% filter(TF=="REL") %>% select(Targets) %>% unlist()
+
+MYC_only_genes <- setdiff(setdiff(MYC_genes, FOSL1_genes), REL_genes)
+FOSL1_only_genes <- setdiff(setdiff(FOSL1_genes, MYC_genes), REL_genes)
+REL_only_genes <- setdiff(setdiff(REL_genes, MYC_genes), FOSL1_genes)
+
+MYC_FOSL1_genes <- setdiff(intersect(MYC_genes, FOSL1_genes), REL_genes)
+FOSL1_REL_genes <- setdiff(intersect(FOSL1_genes, REL_genes), MYC_genes)
+REL_MYC_genes <- setdiff(intersect(REL_genes, MYC_genes), FOSL1_genes)
+
+MYC_FOSL1_REL_genes <- intersect(intersect(REL_genes, MYC_genes), FOSL1_genes)
+
+
+targets_for_enrich <- list(MYC_only_genes, FOSL1_only_genes, REL_only_genes,
+                           MYC_FOSL1_genes, FOSL1_REL_genes, REL_MYC_genes,
+                           MYC_FOSL1_REL_genes)
+hm_enrichment_results <- lapply(1:length(targets_for_enrich), function(i){
+  return(clusterProfiler::enricher(targets_for_enrich[[i]], TERM2GENE=hm))
+})
+names(hm_enrichment_results) <- c("MYC", "FOSL1", "REL",
+                                  "MYC-FOSL1", "FOSL1-REL", "REL-MYC",
+                                  "MYC-FOSL1-REL")
+
+hm_enrichment_results_tidy <- lapply(1:length(hm_enrichment_results), function(i){
+  gene_group = names(hm_enrichment_results)[i]
+  result_table <- hm_enrichment_results[[i]]@result
+  denominator <- as.numeric(strsplit(result_table$GeneRatio, "/")[[1]][2])
+  enrichment_results <- result_table %>%
+    dplyr::mutate(numeric_ratio = Count/denominator) %>%
+    dplyr::arrange(numeric_ratio) %>%
+    dplyr::filter(p.adjust < 0.05) %>%
+    dplyr::mutate(gene_group = gene_group) %>%
+    dplyr::mutate(ID = gsub("HALLMARK_", "", ID))
+}) %>% do.call(rbind, .) %>%
+  dplyr::mutate(gene_group = factor(gene_group, levels = c("MYC", "FOSL1", "REL", "MYC-FOSL1", "REL-MYC", "FOSL1-REL", "MYC-FOSL1-REL")))
+
+matched_color_scale <- setNames(venn_color_scale, c("MYC", "FOSL1", "REL", "MYC-FOSL1", "REL-MYC", "FOSL1-REL", "MYC-FOSL1-REL"))
+fig2d <- ggplot(hm_enrichment_results_tidy, aes(x = gene_group, y = ID, color = gene_group, size = numeric_ratio))+geom_point()+theme_cowplot(font_size = label_size)+RotatedAxis()+xlab(NULL)+ylab(NULL)+scale_color_manual(values = matched_color_scale, guide = FALSE)+scale_size_continuous(name = "gene ratio")+axis_combmatrix()
+
+fig2_right_plot <- plot_grid(plot_grid(fig2b, fig2c, rel_widths = c(2,3), labels = c("b", "c"), scale = c(1, 0.9)),
+                             NULL,
+                             fig2d,
+                             NULL,labels = c(NA, "d", NA), ncol = 1, rel_heights = c(7,1,9,2))
+
+pdf(file = paste0(figure_directory, "Figure2.pdf"), width = 12, height = 8)
+plot_grid(NULL, fig2a, fig2_right_plot, ncol = 3, labels = c("a", NULL, NULL), rel_widths = c(0.2,4,4))
+dev.off()
+
+plot_grid(NULL, fig2a, fig2_right_plot, ncol = 3, labels = c("a", NULL, NULL), rel_widths = c(0.2,4,4))
+```
+
+### Figure 3
+```{r fig 3, eval = TRUE, fig.width = 12, fig.height = 6}
+load(file = paste0(parent.directory, "sct_slingshot_results.RData"))
+load(file = paste0(parent.directory, "sct_slingshot_gene_results.RData"))
+load(file = paste0(parent.directory, "sct_slingshot_modeling_results.RData"))
+
+figure_3_palette <- c(pals::stepped(24)[c(1,3,5,7,9,11,13,15,17,19,23)], "orange2", "orange3")
+base_dimplot <- DimPlot(B.gcpc, label = FALSE, label.box = FALSE, repel = TRUE, label.size = 2, pt.size = 0.25, shuffle = TRUE, cols = figure_3_palette)+
+    theme(axis.title = element_text(size = 7), axis.text = element_text(size = 7), legend.text = element_text(size = 7), legend.title = element_text(size = 7))+
+    xlab("UMAP_1")+
+    ylab("UMAP_2")
+num_curves <- length(gcpc.curves@curves)
+slingshot_path_mappings <- lapply(1:num_curves, function(i){
+  curve_data <- as.data.frame(gcpc.curves@curves[[i]]$s[gcpc.curves@curves[[i]]$ord,])
+  geom_path(data = curve_data, aes(x = pcaumap_1, y = pcaumap_2), inherit.aes = FALSE, color = "black", size = 1.5)
+})
+fig_3a <- base_dimplot
+fig_3a$layers <- c(fig_3a$layers[[1]], slingshot_path_mappings)
+
+fig_3b <- FeaturePlot(B.gcpc, features = "XBP1", order = TRUE, slot = "data", pt.size = 0.25)+scale_color_viridis_c("XBP1")+ggtitle("")+theme(axis.title = element_text(size = 7), axis.text = element_text(size = 7), legend.text = element_text(size = 7), legend.title = element_text(size = 7, face = "italic"))+
+  xlab("UMAP_1")+
+  ylab("UMAP_2")
+
+fig_3c <- FeaturePlot(B.gcpc, features = "pt_curve4", order = TRUE, slot = "data", pt.size = 0.25)+scale_color_viridis_c("pseudotime", limits = c(2,NA))+slingshot_path_mappings[[4]]+ggtitle("")+theme(axis.title = element_text(size = 7), axis.text = element_text(size = 7), legend.text = element_text(size = 7), legend.title = element_text(size = 7))+
+  xlab("UMAP_1")+
+  ylab("UMAP_2")
+
+fig3abc <- cowplot::plot_grid(fig_3a, fig_3b, fig_3c, ncol = 3, labels = c("a", "b", "c"), align = "hv")
+
+pt_associated_results <- assoRes %>% dplyr::filter(pvalue < 0.01)
+predicted_smoothers <- lapply(1:length(pt_associated_results$gene), function(i){
+  predict_gene <- pt_associated_results[i,"gene"]
+  ysmooth <- tradeSeq::predictSmooth(models = B_sce, gene = predict_gene, nPoints = 40)
+  return(ysmooth)
+}) %>% do.call(rbind, .)
+predicted_smoothers_wide <- predicted_smoothers %>%
+  pivot_wider(id_cols = gene, names_from = time,values_from = yhat) %>%
+  column_to_rownames(var = "gene")
+colnames(predicted_smoothers_wide) <- paste0("pt_", 1:ncol(predicted_smoothers_wide))
+
+chosen_metric = "manhattan"
+chosen_clusters = 6
+fig_3d <- cluster_heatmap(predicted_smoothers_wide, max_zed = 3, clusters = chosen_clusters, label_features = c("IGHG3", "IGHM", "MZB1", "IRF8", "PAX5", "PRDM1", "BACH2", "SPIB", "JCHAIN", "BCL6", "IRF4"), color_brewer = "Set1", y_text_size = 7)+theme(axis.text.y = element_text(face = "italic"))
+
+chosen_metric = "manhattan"
+chosen_clusters = 6
+best_genesets_1_regulons <- grep("regulon", best_genesets_1, value = TRUE)
+fig_3e <- cluster_heatmap(imputed_df_1_wide[best_genesets_1_regulons,], max_zed = 3, clusters = chosen_clusters, label_features = rownames(imputed_df_1_wide), y_text_size = 7, color_brewer = "Set3", dist_method = chosen_metric)
+fig_3e_clusters <- cluster_heatmap(imputed_df_1_wide[best_genesets_1_regulons,], max_zed = 3, clusters = chosen_clusters, label_features = rownames(imputed_df_1_wide), y_text_size = 7, color_brewer = "Set3", dist_method = chosen_metric, get_clusters = TRUE)
+
+chosen_features <- fig_3e_clusters %>%
+  dplyr::filter(cluster == 4) %>%
+  dplyr::pull(gene) %>%
+  as.character() %>%
+  sort()
+quick_legend <- cowplot::plot_grid(NULL,cowplot::get_legend(plot_gam_auc(B.gcpc, imputed_df_1, chosen_feature = chosen_features[1], cluster_cols = figure_3_palette[c(1,11)])+theme(legend.text = element_text(size = label_size), legend.title = element_blank())), rel_widths = c(1,3))
+plot_gam_list <- lapply(seq_along(chosen_features), function(i){
+  plot_gam_auc(B.gcpc, imputed_df_1, chosen_feature = chosen_features[i], cluster_cols = figure_3_palette[c(1,11)], point_size = 0.2, assay = "regulons")+
+    ggtitle(chosen_features[i])+
+    theme(text = element_text(size = label_size), axis.text = element_text(size = label_size))+
+    NoLegend()+
+    xlab("pseudotime")+
+    ylab("AUC")
+}) 
+
+fig_3f <- cowplot::plot_grid(cowplot::plot_grid(plotlist = c(plot_gam_list, list(quick_legend))), NULL, ncol = 1, rel_heights = c(6,1))
+fig_3def <- cowplot::plot_grid(fig_3d, fig_3e, fig_3f, ncol = 3, labels = c("d", "e", "f"))
+
+
+pdf(file = paste0(figure_directory, "Figure3.pdf"), width = 16, height = 8)
+plot_grid(fig3abc, fig_3def,  ncol = 1, rel_heights = c(2,3))
+dev.off()
+
+plot_grid(fig3abc, fig_3def,  ncol = 1, rel_heights = c(2,3))
+```
+
+### Table S2
+```{r table s2, eval = TRUE}
+B_RNA_markers$cluster_names <- factor(plyr::mapvalues(paste0("C", B_RNA_markers$cluster),
+                                                      from = levels(B.combined$new_clusters_nums),
+                                                      to = levels(B.combined$cluster_names)), levels = levels(B.combined$cluster_names))
+write.table(B_RNA_markers, file = paste0(figure_directory, "TableS2.txt"), sep = "\t", quote = FALSE, row.names = FALSE)
+```
+
+
+### Table S3
+```{r table s3, eval = TRUE}
+write.table(diff_exp_regulons, file = paste0(figure_directory, "TableS3.txt"), sep = "\t", quote = FALSE, row.names = FALSE)
+
+```
+
+### Table S4
+```{r table s4, eval = TRUE}
+sum(assoRes$pvalue < 0.01)
+dim(assoRes)
+write.table(assoRes, file = paste0(figure_directory, "TableS4.txt"), sep = "\t", quote = FALSE, row.names = FALSE)
+```
+
+
+### Figure S1
+Here we can visualize the percent.mt, percent.dissoc, and nFeature_RNA as a function of nCount_RNA
+```{r figs1, eval = TRUE, include = TRUE, results = "hide", warning = FALSE, fig.height=8, fig.width=12}
+load("/Volumes/SanDiskSSD/bar-or_lab/projects/tonsil_project/analysis/all_preprocessing_310/raw_Seurat_object_list.RData")
+
+donor_color_pal <- RColorBrewer::brewer.pal(5, "Set1")
+
+vln_theme <- list(labs(x = NULL), NoLegend(), theme(title = element_text(size = 10), axis.text.x = element_text(angle = 0, size = 10, hjust = 0.5)))
+
+filters.nFeature_RNA.hi <- 4000
+filters.percent.mt <- 5
+filters.percent.dissoc <- 4
+filters.all <- c(filters.nFeature_RNA.hi, NA, filters.percent.mt, filters.percent.dissoc)
+
+sample_list <- c("TC124-1", "TC124-2", "TC124-3", "TC125", "TC126")
+
+lapply(1:length(B.list), function(i){
+  temp.vln.plots <- VlnPlot(B.list[[i]], features = c("nFeature_RNA", "nCount_RNA", "percent.mt", "percent.dissoc"), combine = FALSE, cols = donor_color_pal[i], pt.size = 0.0001, log = FALSE)
+  temp.vln.plots <- lapply(1:length(temp.vln.plots), function(i){
+    g <- temp.vln.plots[[i]]+
+      vln_theme+
+      geom_hline(yintercept = filters.all[i], color = "red")
+    return(g)})
+  new_plot <- cowplot::plot_grid(plotlist = temp.vln.plots, ncol = 4)
+  return(new_plot)
+}) -> vln.plotlist
+
+figs1b <- DimPlot(B.combined, group.by = "orig.ident", split.by = "orig.ident", ncol = 3, cols = donor_color_pal, reduction = "pca_UMAP", pt.size = 0.5, raster = TRUE)+xlab("UMAP_1")+ylab("UMAP_2")
+
+
+figs1c <- MetaDataPlot(B.combined, split.by = "cluster_names", group.by = "orig.ident", as_freq = FALSE)+
+  scale_fill_manual("", values = donor_color_pal)+
+  ylab("Total cell number")+
+  theme_cowplot()+
+  xlab(NULL)+
+  theme(axis.text.x = element_text(angle = 45, hjust = 1, size = label_size))
+
+
+figs1a <- cowplot::plot_grid(plotlist = vln.plotlist, ncol = 1, nrow = 5)
+figs1bc <- cowplot::plot_grid(figs1b, figs1c, ncol = 1, labels = c("b", "c"))
+cowplot::plot_grid(figs1a, figs1bc, labels = c("a", NA))
+
+pdf(file = paste0(figure_directory, "FigureS1.pdf"), width = 12, height = 8)
+cowplot::plot_grid(figs1a, figs1bc, labels = c("a", NA))
+dev.off()
+
+```
+
+
+### Figure S2
+```{r s2, eval = TRUE, fig.height=15, fig.width=9}
+B_RNA_markers %>%
+  arrange(cluster_names) %>%
+  group_by(cluster_names) %>%
+  filter(p_val_adj < 0.01 & avg_log2FC > 0.3) %>%
+  top_n(n = 10, wt = avg_log2FC) -> top10
+
+markers_to_highlight <- B_RNA_markers %>% dplyr::rename(features.plot = gene, id = cluster_names)  %>% filter((p_val_adj < 0.01) & (avg_log2FC > 0.3) &(features.plot %in% top10$gene))
+
+figs2 <- DotPlot(B.combined, features = rev(unique(top10$gene)), assay = "RNA", group.by = "cluster_names", dot.scale = 3)+
+  geom_point(data = markers_to_highlight, shape = 0, aes(x = features.plot, y = id), size = 3, color = "black")+
+  RotatedAxis()+
+  coord_flip()+
+  scale_color_viridis_c(option = "D", direction = -1)+
+  dotplot_theme+
+  theme(axis.text.y = element_text(face = "italic"))+
+  xlab(NULL)+
+  ylab(NULL)
+
+figs2
+
+pdf(file = paste0(figure_directory, "FigureS2.pdf"), width = 9, height = 15)
+figs2
+dev.off()
+```
+
+### Figure S3
+```{r s3, eval = TRUE, fig.height=6, fig.width=9}
+load(file = paste0(parent.directory, "naive_memory_markers.RData"))
+B_naive_RNA_markers %>%
+  dplyr::rename(cluster_names = cluster) %>%
+  arrange(cluster_names) %>%
+  group_by(cluster_names) %>%
+  filter(p_val_adj < 0.01 & avg_log2FC > 0.3) %>%
+  top_n(n = 10, wt = avg_log2FC) -> top10
+
+markers_to_highlight_naive <- B_naive_RNA_markers %>% dplyr::rename(features.plot = gene, id = cluster)  %>% filter((p_val_adj < 0.01) & (avg_log2FC > 0.3) &(features.plot %in% top10$gene))
+
+figs3a <- DotPlot(B.naive, features = rev(unique(top10$gene)), assay = "RNA", group.by = "cluster_names", dot.scale = 3)+
+  geom_point(data = markers_to_highlight_naive, shape = 0, aes(x = features.plot, y = id), size = 3, color = "black")+
+  RotatedAxis()+
+  coord_flip()+
+  scale_color_viridis_c(option = "D", direction = -1)+
+  dotplot_theme+
+  theme(axis.text.y = element_text(face = "italic"))+
+  xlab(NULL)+
+  ylab(NULL)
+
+
+
+B_memory_RNA_markers %>%
+  dplyr::rename(cluster_names = cluster) %>%
+  arrange(cluster_names) %>%
+  group_by(cluster_names) %>%
+  filter(p_val_adj < 0.01 & avg_log2FC > 0.3) %>%
+  top_n(n = 10, wt = avg_log2FC) -> top10
+
+markers_to_highlight_memory <- B_memory_RNA_markers %>% dplyr::rename(features.plot = gene, id = cluster)  %>% filter((p_val < 0.01) & (avg_log2FC > 0.3) &(features.plot %in% top10$gene))
+
+figs3b <- DotPlot(B.memory, features = rev(unique(top10$gene)), assay = "RNA", group.by = "cluster_names", dot.scale = 3)+
+  geom_point(data = markers_to_highlight_memory, shape = 0, aes(x = features.plot, y = id), size = 3, color = "black")+
+  RotatedAxis()+
+  coord_flip()+
+  scale_color_viridis_c(option = "D", direction = -1)+
+  dotplot_theme+
+  theme(axis.text.y = element_text(face = "italic"))+
+  xlab(NULL)+
+  ylab(NULL)
+
+
+
+cowplot::plot_grid(figs3a, figs3b, labels = c("a", "b"))
+
+pdf(file = paste0(figure_directory, "FigureS3.pdf"), width = 5, height = 6)
+cowplot::plot_grid(figs3a, figs3b, labels = c("a", "b"))
+dev.off()
+
+```
+
+### Figure S4
+```{r fig s4, eval = TRUE, fig.width=12, fig.height=6}
+VlnPlot(B.combined, c("FOSL1-regulon", "MYC-regulon", "REL-regulon"), ncol = 3, pt.size = 0)+theme(axis.text.x = element_text(size = 7))
+
+pdf(file = paste0(figure_directory, "FigureS4.pdf"), width = 16, height = 6)
+VlnPlot(B.combined, c("FOSL1-regulon", "MYC-regulon", "REL-regulon"), ncol = 3, pt.size = 0, assay = "regulons")+theme(axis.text.x = element_text(size = 7))+xlab(NULL)+ylab(NULL)
+dev.off()
+```
+
+### Figure S5
+```{r fig s5, eval = TRUE, fig.width = 10, fig.height=6}
+
+figs5 <- MetaDataPlot(B.gcpc, split.by = "cluster_names", group.by = "previous_idents")+
+  xlab("New Identities")+
+  ylab("Proportion")+
+  theme_cowplot()+
+  theme(axis.text.x=element_text(angle = 45, hjust = 1))+
+  scale_fill_manual("Prior Identities", values = c(RColorBrewer::brewer.pal(11, "Set3")))
+
+figs5
+pdf(file = paste0(figure_directory, "FigureS5.pdf"), width = 12, height = 4)
+figs5
+dev.off()
+```
+
+### Figure S6
+```{r fig s6, eval = TRUE, fig.width=12, fig.height=4}
+fig_s6i <- FeaturePlot(B.gcpc, features = "PRDM1", order = TRUE, slot = "data", pt.size = 0.5)+scale_color_viridis_c("PRDM1")+ggtitle("")+xlab("UMAP_1")+ylab("UMAP_2")+theme(legend.title = element_text(face = "italic"))
+fig_s6ii <- FeaturePlot(B.gcpc, features = "MZB1", order = TRUE, slot = "data", pt.size = 0.5)+scale_color_viridis_c("MZB1")+ggtitle("")+xlab("UMAP_1")+ylab("UMAP_2")+theme(legend.title = element_text(face = "italic"))
+fig_s6iii <- FeaturePlot(B.gcpc, features = "IGHG4", order = TRUE, slot = "data", pt.size = 0.5)+scale_color_viridis_c("IGHG4")+ggtitle("")+xlab("UMAP_1")+ylab("UMAP_2")+theme(legend.title = element_text(face = "italic"))
+cowplot::plot_grid(fig_s6i, fig_s6ii, fig_s6iii, ncol = 3)
+pdf(file = paste0(figure_directory, "FigureS6.pdf"), width = 12, height = 4)
+cowplot::plot_grid(fig_s6i, fig_s6ii, fig_s6iii, ncol = 3)
+dev.off()
+```
+
+### Figure S7
+```{r fig s7, eval = TRUE}
+chosen_genes <- gsub("-regulon", "", chosen_features)
+quick_legend <- cowplot::plot_grid(NULL,cowplot::get_legend(plot_gam_auc(B.gcpc, imputed_df_1, chosen_feature = chosen_genes[1], cluster_cols = figure_3_palette[c(1,11)])+theme(legend.text = element_text(size = label_size), legend.title = element_blank())), rel_widths = c(1,3))
+plot_gam_list <- lapply(seq_along(chosen_genes), function(i){
+  plot_gam_auc(B.gcpc, imputed_df_1, chosen_feature = chosen_genes[i], cluster_cols = figure_3_palette[c(1,11)], point_size = 0.2)+
+    ggtitle(paste0(chosen_genes[i], " (RNA)"))+
+    theme(text = element_text(size = label_size), axis.text = element_text(size = label_size))+
+    NoLegend()+
+    xlab("pseudotime")+
+    ylab("Expression")
+}) 
+
+fig_s7 <- cowplot::plot_grid(plotlist = c(plot_gam_list, list(quick_legend)))
+fig_s7
+
+pdf(file = paste0(figure_directory, "FigureS7.pdf"), width = 9, height = 6)
+fig_s7
+dev.off()
+
+
+```

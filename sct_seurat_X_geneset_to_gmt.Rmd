@@ -1,0 +1,95 @@
+---
+title: "Tonsil Unstimulated B cell scRNA-seq"
+subtitle: "Part X: making gene sets into GMTs for AUCell"
+author: "Diego A. Espinoza"
+date: Last compiled on `r format(Sys.Date(), "%d %B %Y")`
+output:
+  html_document:
+    code_folding: show
+    fig_caption: yes
+    df_print: paged
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(autodep        = TRUE,
+                      #cache          = TRUE,
+                      #cache.path     = paste0("cache/", DOCNAME, "/"),
+                      #cache.comments = FALSE,
+                      echo           = TRUE,
+                      error          = FALSE,
+                      #fig.align      = "center",
+                      #fig.width      = 10,
+                      fig.height     = 8,
+                      message        = FALSE,
+                      warning        = FALSE)
+```
+
+```{r echo=TRUE, message=FALSE, results='hide', warning=FALSE}
+require(magrittr)
+require(knitr)
+require(dplyr)
+require(tidyr)
+require(Seurat)
+require(kableExtra)
+require(readr)
+require(readxl)
+source("/Users/diegoespinoza/Documents/espinozada_lab/r_packages/seurat_helper_functions/seurathelper/R/seurat_helper_functions.R")
+parent.directory <- "/Volumes/SanDiskSSD/bar-or_lab/projects/tonsil_project/analysis/sct_seurat/"
+rerun_analysis <- FALSE
+```
+
+### Converting gene sets to .gmt files for use in AUCell
+```{r score addition, eval = rerun_analysis, include = TRUE}
+
+#Cell cycle genes
+s_phase_genes <- cc.genes.updated.2019$s.genes
+g2m_phase_genes <- cc.genes.updated.2019$g2m.genes
+
+#LZ and DZ genesets
+blood.data <- read.delim("~/Documents/bar-or_lab/projects/tonsil_project/analysis/supplementary_information/blood_vitora_et_al/blood_DZ_LZ_genes.txt", sep = '\t',  stringsAsFactors = FALSE) %>% as_tibble()
+LZ.markers <- blood.data %>% filter(Enriched.in == "LZ") %>% arrange(desc(Z.score)) %>% pull(final_gene_name) %>% unique()
+DZ.markers <- blood.data %>% filter(Enriched.in == "DZ") %>% arrange(desc(Z.score)) %>% pull(final_gene_name) %>% unique()
+
+#MYC gene sets
+myc.targets <- read.delim("~/Documents/bar-or_lab/projects/tonsil_project/analysis/supplementary_information/genesets/HALLMARK_MYC_TARGETS_V2.txt", sep = '\t',  stringsAsFactors = FALSE, skip = 1)[,1]
+
+#dissociation gene sets
+dissociation.genes <- read_excel("~/Documents/bar-or_lab/projects/tonsil_project/analysis/supplementary_information/dissociation_genes.xlsx") %>% select('Human ID') %>% na.omit %>% pull("Human ID")
+
+#CD40 signaling gene set
+CD40.signalling <- read.delim("~/Documents/bar-or_lab/projects/tonsil_project/analysis/supplementary_information/genesets/BASSO_CD40_SIGNALING_UP.txt", sep = '\t',  stringsAsFactors = FALSE, skip = 1)[,1] %>% unique
+
+#Add scores from rui RNA-seq stimulation datasets
+BCR_up_only <- read.delim("~/Documents/bar-or_lab/projects/rui_stimulation_project/analysis/gene_list_results/BCR_up_only.txt", header = FALSE, stringsAsFactors = FALSE)[,1]
+CD40L_up_only <- read.delim("~/Documents/bar-or_lab/projects/rui_stimulation_project/analysis/gene_list_results/CD40L_up_only.txt", header = FALSE, stringsAsFactors = FALSE)[,1]
+costim_up <- read.delim("~/Documents/bar-or_lab/projects/rui_stimulation_project/analysis/gene_list_results/costim_up.txt", header = FALSE, stringsAsFactors = FALSE)[,1]
+IL4_up_only <- read.delim("~/Documents/bar-or_lab/projects/rui_stimulation_project/analysis/gene_list_results/IL4_up.txt", header = FALSE, stringsAsFactors = FALSE)[,1]
+IL21_up_only <- read.delim("~/Documents/bar-or_lab/projects/rui_stimulation_project/analysis/gene_list_results/IL21_up.txt", header = FALSE, stringsAsFactors = FALSE)[,1]
+
+full_list <- list(s_phase_genes, g2m_phase_genes, LZ.markers, DZ.markers, myc.targets,
+                  dissociation.genes, CD40.signalling, BCR_up_only, CD40L_up_only, costim_up)
+full_list_names <- c("s_genes", "g2m_genes", "LZ_vitora_genes", "DZ_vitora_genes",
+                     "MYC_msigdb_genes", "dissociation_genes", "CD40_basso_genes",
+                     "BCR_rnaseq_genes", "CD40_rnaseq_genes", "costim_rnaseq_genes")
+full_list_w_names <- lapply(1:length(full_list), function(i){return(c(full_list_names[i], "custom", full_list[[i]]))})
+max_size <- max(unlist(lapply(full_list_w_names, length)))
+
+file.remove(paste0(parent.directory, "aucell/genesets.gmt"))
+lapply(full_list_w_names,
+       write,
+       file = paste0(parent.directory, "aucell/genesets.gmt"),
+       append=TRUE,
+       sep = ",",
+       ncolumns=max_size)
+
+final_geneset <- lapply(1:length(full_list), function(i){
+  data.frame(geneset = full_list_names[i], genes = full_list[[i]])
+}) %>% do.call(rbind, .)
+
+write.table(final_geneset, file = paste0(parent.directory, "aucell/genesets_table.txt"))
+
+
+```
+
+
+
