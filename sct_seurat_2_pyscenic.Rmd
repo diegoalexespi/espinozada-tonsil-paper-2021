@@ -1,5 +1,5 @@
 ---
-title: "Tonsil Unstimulated B cell scRNA-seq"
+title: "Tonsil B cell scRNA-seq"
 subtitle: "Part 2: Scoring the pySCENIC-derived regullons with AUCell"
 author: "Diego A. Espinoza"
 date: Last compiled on `r format(Sys.Date(), "%d %B %Y")`
@@ -32,9 +32,9 @@ require(kableExtra)
 require(readxl)
 require(reticulate)
 require(clusterProfiler)
-source("/Users/diegoespinoza/Documents/espinozada_lab/r_packages/seurat_helper_functions/seurathelper/R/seurat_helper_functions.R")
-source("/Users/diegoespinoza/Documents/espinozada_lab/my_seurat_wrappers/RunAUCell.R")
-parent.directory <- "/Volumes/SanDiskSSD/bar-or_lab/projects/tonsil_project/analysis/sct_seurat/"
+source("seurat_helper_functions.R")
+source("RunAUCell.R")
+parent.directory <- "intermediate/"
 ```
 
 
@@ -49,7 +49,7 @@ load(file = paste0(parent.directory, "sct_named_clusters.RData"))
 ### B.1 Determining the regulons
 The regulons were determined using the pySCENIC pipeline.  We chose to run the pySCENIC pipeline 10 times on the whole dataset. Here we can visualize that many regulons overlap in all 10 runs, so we will only take those that overlap in all 10 runs (we can argue that there is higher confidence in these links).
 ```{r dtrmn regulons, eval = TRUE}
-target_directories <- paste0(parent.directory, "/from_pyscenic_HPC/w_filter/run_compiled/Bint_pyscenic_regulons_formatted_run_", 1:10, ".csv")
+target_directories <- paste0("from_pyscenic_HPC/w_filter/run_compiled/Bint_pyscenic_regulons_formatted_run_", 1:10, ".csv")
 regulon_runs <- lapply(seq_along(target_directories), function(i){
   read.csv(target_directories[i])
 }) %>% do.call(rbind, .) %>%
@@ -116,7 +116,7 @@ B.combined <- FindClusters(B.combined, graph.name = "regulon_annoy_nn_snn", reso
 In order to maintain consistency in scoring genesets, we will also load our other non-regulon geneset AUCs into our Seurat object.
 ```{r auc genesets, eval = FALSE}
 #add geneset AUCs to the Seurat object
-my_genesets_dataframe <- ReadGMT("/Volumes/SanDiskSSD/bar-or_lab/projects/tonsil_project/analysis/sct_seurat/aucell/genesets.gmt")
+my_genesets_dataframe <- ReadGMT("intermediate/genesets.gmt")
 my_genesets <- levels(unique(my_genesets_dataframe$term))
 my_genesets_names <- my_genesets
 geneset_list <- lapply(1:length(my_genesets), function(i){
@@ -128,15 +128,6 @@ names(geneset_list) <- my_genesets_names
 
 B.combined <- RunAUCell(B.combined, assay = "RNA", ranking.save = FALSE, ranking.key = "ranking", genesets = geneset_list, slot = "counts",auc_assay_name = "genesetAUC")
 
-btms <- ReadGMT("/Volumes/SanDiskSSD/bar-or_lab/projects/databases/btm/BTM_for_GSEA_20131008.gmt", file_sep = "\t")
-btms_names <- btms %>% dplyr::group_by(term) %>% dplyr::group_keys() %>% dplyr::pull(term)
-btms_list <- btms %>%
-  dplyr::group_by(term) %>%
-  dplyr::group_split() %>%
-  lapply(., "[[", 2)
-names(btms_list) <- btms_names
-
-B.combined <- RunAUCell(B.combined, assay = "RNA", ranking.save = FALSE, ranking.key = "ranking", genesets = btms_list, slot = "counts",auc_assay_name = "btmAUC")
 
 hm <- clusterProfiler::read.gmt("/Volumes/SanDiskSSD/bar-or_lab/projects/databases/molsigdb/h.all.v7.2.symbols.gmt")
 hm_names <- hm %>% dplyr::group_by(term) %>% dplyr::group_keys() %>% dplyr::pull(term)
@@ -276,7 +267,6 @@ B.combined@meta.data %>%
 ```{r heatmap, eval = TRUE, fig.width=12, fig.height=9}
 DoGenesetHeatmap(B.combined, assay = "regulons", diff_exp_results = diff_exp_regulons, group.by = "cluster_names", scale_rows = TRUE, auc_choice = 0.9)
 DoGenesetHeatmap(B.combined, assay = "genesetAUC", diff_exp_results = diff_exp_genesets, group.by = "cluster_names", scale_rows = TRUE, auc_choice = 0.8, plot_all = TRUE)
-DoGenesetHeatmap(B.combined, assay = "btmAUC", diff_exp_results = diff_exp_btms, group.by = "cluster_names", scale_rows = TRUE, auc_choice = 0.8, plot_all = FALSE)
 DoGenesetHeatmap(B.combined, assay = "hmAUC", diff_exp_results = diff_exp_hms, group.by = "cluster_names", scale_rows = TRUE, auc_choice = 0.8, plot_all = FALSE)
 
 ```
@@ -287,205 +277,6 @@ DoGenesetHeatmap(B.combined, assay = "hmAUC", diff_exp_results = diff_exp_hms, g
 Idents(B.combined) <- "regulon_annoy_nn_snn_res.0.8"
 diff_exp_regulons_by_regulons <- presto::wilcoxauc(B.combined, seurat_assay = "regulons", group_by = "regulon_annoy_nn_snn_res.0.8", assay = "counts")
 DoGenesetHeatmap(B.combined, assay = "regulons", diff_exp_results = diff_exp_regulons_by_regulons, group.by = "regulon_annoy_nn_snn_res.0.8", scale_rows = TRUE, auc_choice = 0.8, plot_all = FALSE)
-```
-
-
-### XX Scoring each original cluster by the top regulons
-First, take the R variables you wish to import into python and set them into reticulate friendly variables (ie no "." and acceptable variable types).
-```{r getting seurat info, eval = FALSE}
-Idents(B.combined) <- "regulon_annoy_nn_snn_res.0.8"
-chosen_cluster_assignments_regulons <- data.frame(cluster = Idents(B.combined))
-Idents(B.combined) <- "cluster_names"
-chosen_cluster_assignments_seurat <- data.frame(cluster = Idents(B.combined))
-```
-Because the pyscenic regulon_specificity_scores function gets cranky when trying to input a Pandas Series from reticulate, we call it from within python after converting our chosen_cluster_assignments to a Series
-```{r regulon scores py, results="hide", eval = FALSE}
-repl_python()
-import pandas as pd
-import pyscenic.rss
-rss_scores_regulons = pyscenic.rss.regulon_specificity_scores(r.regulon_matrix, r.chosen_cluster_assignments_regulons.iloc[:,0])
-rss_scores_seurat = pyscenic.rss.regulon_specificity_scores(r.regulon_matrix, r.chosen_cluster_assignments_seurat.iloc[:,0])
-exit
-```
-We now switch back to R and retrieve the rss_scores using reticulate.
-``` {r regulon scores R, eval = FALSE}
-py$rss_scores_regulons %>% rownames_to_column(var = "cluster") %>% pivot_longer(-cluster, names_to = "regulon") %>% group_by(cluster) %>% mutate(rank = rank(-value, ties.method = "first")) %>% mutate(regulon = gsub(x = regulon, pattern = "_", replacement = "-", fixed = TRUE)) -> rss_scores_regulons_from_py
-py$rss_scores_seurat %>% rownames_to_column(var = "cluster") %>% pivot_longer(-cluster, names_to = "regulon") %>% group_by(cluster) %>% mutate(rank = rank(-value, ties.method = "first")) %>% mutate(regulon = gsub(x = regulon, pattern = "_", replacement = "-", fixed = TRUE)) -> rss_scores_seurat_from_py
-Idents(B.combined) <- "regulon_annoy_nn_snn_res.0.8"
-rss_scores_regulons_from_py$cluster <- factor(rss_scores_regulons_from_py$cluster, levels = levels(Idents(B.combined)))
-Idents(B.combined) <- "cluster_names"
-rss_scores_seurat_from_py$cluster <- factor(rss_scores_seurat_from_py$cluster, levels = levels(Idents(B.combined)))
-```
-
-### Regulon specificity scores 1
-
-```{r RSSs, eval = FALSE, fig.width=12, fig.height=12}
-
-regulon_dataframe <- read.csv("/Volumes/SanDiskSSD/bar-or_lab/projects/tonsil_project/analysis/sct_seurat/aucell/Bint_pyscenic_regulons_merged.csv")
-my_regulons <- unique(regulon_dataframe$TF)
-my_regulons <- paste0(my_regulons, "_regulon")
-my_regulons <- gsub("BORCS8-MEF2B", "BORCS8.MEF2B", my_regulons, fixed = TRUE)
-smoll_regulons <- my_regulons[table(regulon_dataframe$TF) < 10]
-smoll_regulons <- gsub(pattern = "_", replacement = "-", smoll_regulons)
-
-rss_scores_regulons_from_py_list <- rss_scores_regulons_from_py %>%
-  group_by(cluster) %>%
-  mutate(regulon = gsub(regulon, pattern = "-regulon", replacement = "")) %>%
-  group_split()
-
-clusters <- sort(as.numeric(levels(rss_scores_regulons_from_py$cluster)))
-n.clusters <- length(clusters)
-
-
-
-regulon_list <- lapply(1:n.clusters, function(i) {
-  cluster.name <- clusters[[i]]
-  temp_df <- rss_scores_regulons_from_py_list[[i]]
-  temp_df <- temp_df[!(paste0(temp_df$regulon, "-regulon") %in% smoll_regulons),]
-  min_value <- min(temp_df$value)
-  max_value <- max(temp_df$value)
-  temp_df_labels <- temp_df[order(temp_df$value),]
-  temp_df_labels <- temp_df_labels[temp_df_labels$rank <= 25,]
-  temp_df_labels$end_y <- seq(min_value, max_value, length.out = nrow(temp_df_labels))
-  ggplot(temp_df, aes(x = rank, y = value, label = regulon))+
-    geom_point()+
-    geom_text(data = temp_df_labels,
-              mapping = aes(x = 50, y = end_y),
-              size = 3,
-              hjust = 0,
-              color = "red")+
-    geom_segment(data = temp_df_labels,
-                 mapping = aes(x = rank, xend = 50, y = value, yend = end_y),
-                 color = "red")+
-    geom_point(data = temp_df_labels, aes(x = rank, y = value), color = "red")+
-    ggtitle(clusters[i])+
-    theme_classic()
-})
-plot_grid(plotlist = regulon_list, align = "none", ncol = 4)
-
-```
-
-### Regulon specificity scores 2
-
-```{r RSSs 2, eval = FALSE, fig.width=12, fig.height=16}
-
-regulon_dataframe <- read.csv("/Volumes/SanDiskSSD/bar-or_lab/projects/tonsil_project/analysis/sct_seurat/aucell/Bint_pyscenic_regulons_merged.csv")
-my_regulons <- unique(regulon_dataframe$TF)
-my_regulons <- paste0(my_regulons, "_regulon")
-my_regulons <- gsub("BORCS8-MEF2B", "BORCS8.MEF2B", my_regulons, fixed = TRUE)
-smoll_regulons <- my_regulons[table(regulon_dataframe$TF) < 10]
-smoll_regulons <- gsub(pattern = "_", replacement = "-", smoll_regulons)
-
-rss_scores_seurat_from_py_list <- rss_scores_seurat_from_py %>%
-  group_by(cluster) %>%
-  mutate(regulon = gsub(regulon, pattern = "-regulon", replacement = "")) %>%
-  group_split()
-
-clusters <- sort(as.numeric(levels(rss_scores_seurat_from_py$cluster)))
-n.clusters <- length(clusters)
-
-
-
-regulon_list <- lapply(1:n.clusters, function(i) {
-  cluster.name <- clusters[[i]]
-  temp_df <- rss_scores_seurat_from_py_list[[i]]
-  temp_df <- temp_df[!(paste0(temp_df$regulon, "-regulon") %in% smoll_regulons),]
-  min_value <- min(temp_df$value)
-  max_value <- max(temp_df$value)
-  temp_df_labels <- temp_df[order(temp_df$value),]
-  temp_df_labels <- temp_df_labels[temp_df_labels$rank <= 25,]
-  temp_df_labels$end_y <- seq(min_value, max_value, length.out = nrow(temp_df_labels))
-  ggplot(temp_df, aes(x = rank, y = value, label = regulon))+
-    geom_point()+
-    geom_text(data = temp_df_labels,
-              mapping = aes(x = 50, y = end_y),
-              size = 3,
-              hjust = 0,
-              color = "red")+
-    geom_segment(data = temp_df_labels,
-                 mapping = aes(x = rank, xend = 50, y = value, yend = end_y),
-                 color = "red")+
-    geom_point(data = temp_df_labels, aes(x = rank, y = value), color = "red")+
-    ggtitle(clusters[i])+
-    theme_classic()
-})
-plot_grid(plotlist = regulon_list, align = "none", ncol = 4)
-
-```
-
-### B.8 Binarization of regulons
-```{r binarization results, eval = FALSE, fig.width =12, fig.height=8}
-binarized_matrix <- read.csv("/Volumes/SanDiskSSD/bar-or_lab/projects/tonsil_project/analysis/pyscenic/Bint_pyscenic_regulons_binarized.csv", row.names = 1)
-colnames(binarized_matrix) <- gsub(pattern = "...", replacement = "_regulon", x = colnames(binarized_matrix), fixed = TRUE)
-binarized_matrix <- binarized_matrix[colnames(B.combined),]
-B.combined[["binarized_regulons"]] <- CreateAssayObject(data = Matrix::Matrix(t(binarized_matrix), sparse = TRUE), min.cells = 0, min.features = 0)
-DefaultAssay(B.combined) <- "binarized_regulons"
-B.combined@meta.data %>%
-  rownames_to_column(var = "barcode") %>%
-  dplyr::mutate(cluster = as.character(harmony_annoy_nn_snn_res.0.6)) %>%
-  dplyr::select(barcode, cluster) %>%
-  left_join(binarized_matrix %>% rownames_to_column(var = "barcode"), by = "barcode") %>%
-  pivot_longer(names_to = "regulon", cols = c(-barcode, -cluster), values_to = "binary") %>%
-  group_by(cluster, regulon) %>%
-  summarise(freq = sum(binary)/n()) %>%
-  filter(freq > .5) %>%
-  pull(regulon) %>%
-  unique -> chosen_binarized_regulons
-chosen_binarized_regulons <- gsub(pattern = "_", "-", chosen_binarized_regulons)
-
-B.subset.heatmap <- subset(B.combined, downsample = 100)
-
-GetAssayData(B.subset.heatmap, slot = "data", assay = "binarized_regulons") %>%
-  as.data.frame() %>%
-  rownames_to_column(var = "regulon") %>%
-  filter(regulon %in% chosen_binarized_regulons) %>%
-  mutate(regulon = factor(regulon, levels = chosen_binarized_regulons)) %>%
-  arrange(regulon) %>%
-  column_to_rownames("regulon") %>%
-  as.matrix %>%
-  proxy::dist(method = "jaccard") %>%
-  hclust %>%
-  .$order -> regulon_order
-DoHeatmap(B.subset.heatmap, features = chosen_binarized_regulons[regulon_order], assay = "binarized_regulons", slot = "data", raster = TRUE)+scale_fill_viridis_c()
-
-```
-
-### B.5 Getting binarized regulons
-```{r binarized, eval = FALSE}
-binarized_regulons <- read.csv("/Volumes/SanDiskSSD/bar-or_lab/projects/tonsil_project/analysis/sct_seurat/aucell/Bint_pyscenic_regulons_binarized.csv", row.names = 1)
-binarized_regulons <- binarized_regulons[colnames(B.combined),]
-B.combined[["binarized"]] <- CreateAssayObject(data = Matrix::Matrix(t(binarized_regulons), sparse = TRUE), min.cells = 0, min.features = 0)
-
-B.combined@meta.data %>%
-  rownames_to_column(var = "cell_id") %>%
-  select(cell_id, annoy_nn_snn_res.0.6) %>%
-  rename(cluster = annoy_nn_snn_res.0.6) %>%
-  left_join(binarized_regulons %>% rownames_to_column(var = "cell_id"), by = "cell_id") %>%
-  pivot_longer(cols = -c(cell_id, cluster), names_to = "regulon", values_to = "activity") %>%
-  select(-cell_id) %>%
-  group_by(cluster, regulon) %>%
-  summarize(total = n(), sum_activity = sum(activity)) %>%
-  mutate(freq_activity = sum_activity/total) -> binarized_activities
-  
-binarized_activities %>% filter(freq_activity > 0.5) %>% pull(regulon) %>% unique() -> binary_regulons
-#cell_subsample <- B.combined@meta.data %>% rownames_to_column(var = "cell_id") %>% group_by(annoy_nn_snn_res.0.6) %>% sample_n(size = 100) %>% pull(cell_id) 
-#binary_subset <- subset(B.combined, cells = cell_subsample)
-#DefaultAssay(binary_subset) <- "binarized"
-binarized_activities %>% ungroup() %>% mutate(cluster = paste0("cluster_", cluster)) %>% pivot_wider(id_cols = regulon, names_from = cluster, values_from = freq_activity) %>% filter(regulon %in% binary_regulons) %>% column_to_rownames(var = "regulon") -> binarized_activities_wide
-binary_reg_order <- rownames(binarized_activities_wide)[hclust(dist(binarized_activities_wide ))$order]
-binary_clu_order <- colnames(binarized_activities_wide)[hclust(dist(t(binarized_activities_wide)))$order]
-
-binarized_activities_wide %>%
-  rownames_to_column(var = "regulon") %>%
-  pivot_longer(-regulon, names_to = "cluster", values_to = "avg_binary") %>%
-  mutate(regulon = factor(regulon, levels = binary_reg_order), cluster = factor(cluster, levels = binary_clu_order)) %>%
-  ggplot(aes(x = cluster, y = regulon, fill = avg_binary))+
-  geom_tile(color = "grey")+
-  scale_x_discrete(position = "top", labels = function(x){gsub("cluster_", "", x)}, expand = c(0,0))+
-  scale_fill_viridis_c(option = "A")+
-  theme(axis.ticks = element_blank())
-  
-
 ```
 
 
