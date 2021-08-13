@@ -1,5 +1,5 @@
 ---
-title: "Tonsil Unstimulated B cell scRNA-seq Dimensionality Reduction and Clustering"
+title: "Tonsil B cell scRNA-seq"
 subtitle: "Subclustering the GC and PC clusters"
 author: "Diego A. Espinoza"
 date: Last compiled on `r format(Sys.Date(), "%d %B %Y")`
@@ -25,9 +25,9 @@ require(cowplot)
 require(kableExtra)
 require(readr)
 require(readxl)
-source("~/Documents/espinozada_lab/r_packages/seurat_helper_functions/seurathelper/R/seurat_helper_functions.R")
-parent.directory <- "/Volumes/SanDiskSSD/bar-or_lab/projects/tonsil_project/analysis/sct_seurat/"
-parent.directory.fastqs <- "/Volumes/SanDiskSSD/bar-or_lab/projects/tonsil_project/raw_data/cellranger_3_1_0/filtered/"
+source("seurat_helper_functions.R")
+parent.directory <- "intermediate/"
+parent.directory.mtx <- "filtered/"
 ```
 
 ## A. GC and ASC extraction
@@ -46,11 +46,11 @@ cell_barcodes_list <- lapply(1:length(list_identifiers), function(i){
     pull(raw_barcode) -> raw_barcodes
   return(raw_barcodes)
 })
-TC124.1.data <- Read10X(data.dir = paste0(parent.directory.fastqs, "Amit1"), strip.suffix = TRUE)
-TC124.2.data <- Read10X(data.dir = paste0(parent.directory.fastqs, "Amit7"), strip.suffix = TRUE)
-TC124.3.data <- Read10X(data.dir = paste0(parent.directory.fastqs, "Amit8"), strip.suffix = TRUE)
-TC125.data <- Read10X(data.dir = paste0(parent.directory.fastqs, "Amit2"), strip.suffix = TRUE)
-TC126.data <- Read10X(data.dir = paste0(parent.directory.fastqs, "Amit3"), strip.suffix = TRUE)
+TC124.1.data <- Read10X(data.dir = paste0(parent.directory.mtx, "Amit1"), strip.suffix = TRUE)
+TC124.2.data <- Read10X(data.dir = paste0(parent.directory.mtx, "Amit7"), strip.suffix = TRUE)
+TC124.3.data <- Read10X(data.dir = paste0(parent.directory.mtx, "Amit8"), strip.suffix = TRUE)
+TC125.data <- Read10X(data.dir = paste0(parent.directory.mtx, "Amit2"), strip.suffix = TRUE)
+TC126.data <- Read10X(data.dir = paste0(parent.directory.mtx, "Amit3"), strip.suffix = TRUE)
 
 B.names <- c("TC124.1", "TC124.2", "TC124.3", "TC125", "TC126")
 B.list <- list(TC124.1.data, TC124.2.data, TC124.3.data, TC125.data, TC126.data)
@@ -67,7 +67,7 @@ B.list <- lapply(1:length(B.list), function(i){
 ### A.2. Re-run SCTransform normalization and integration
 Now that we have our new Seurat objects, we will add metadata and then will re-perform our SCTransform normalization and the Seurat v3 integration algorithm.
 ```{r re-add important information and normalization, eval = FALSE}
-read_excel("~/Documents/bar-or_lab/projects/tonsil_project/analysis/supplementary_information/dissociation_genes.xlsx") %>% select('Human ID') %>% na.omit %>% pull("Human ID") -> dissociation.genes
+read_excel("dissociation_genes.xlsx") %>% select('Human ID') %>% na.omit %>% pull("Human ID") -> dissociation.genes
 
 for(i in 1:length(B.list)){
   temp.dissoc.genes <- dissociation.genes[dissociation.genes %in% rownames(B.list[[i]])]
@@ -263,52 +263,4 @@ DimPlot(B.gcpc, label = TRUE, label.box = TRUE, repel = TRUE, cols = c("dodgerbl
 ```
 
 
-### B.5 Geneset VlnPlot
-We can use some genesets for each cluster to visualize our data.
-```{r geneset VlnPlot, eval = FALSE, fig.height=6, fig.width=12}
-features.of.interest <- c("DZ.Score1", "LZ.Score1", "CD40.signalling1", "MYC.signature1", "G2M.Score", "S.Score", "BCR_stim1", "CD40_stim2", "percent.mt", "percent.dissoc")
-VlnPlot(B.gcpc, features = features.of.interest, assay = "RNA", pt.size = 0)
 
-```
-
-
-### B.6 Cluster identity mapping
-We can use some genesets for each cluster to visualize our data.
-```{r cluster identity mapping, eval = FALSE}
-B.gcpc@meta.data %>%
-  select(cluster_names, previous_idents) %>%
-  set_colnames(c("new_idents", "previous_idents")) %>%
-  group_by(new_idents, previous_idents) %>%
-  summarize(freq = n()) %>%
-  mutate(proport = freq/sum(freq)) %>%
-  mutate(new_idents = factor(new_idents, levels = levels(B.gcpc$cluster_names))) %>% 
-  ggplot(aes(x = new_idents, y = proport, fill = previous_idents))+
-  geom_col(position = "stack", color = 'black')+
-  theme(axis.text.x=element_text(angle = 45, hjust = 1))+
-  scale_fill_manual(values = c(RColorBrewer::brewer.pal(11, "Set3")))
-
-B.gcpc@meta.data %>%
-  select(cluster_names, previous_idents) %>%
-  set_colnames(c("new_idents", "previous_idents")) %>%
-  group_by(previous_idents, new_idents) %>%
-  summarize(freq = n()) %>%
-  mutate(proport = freq/sum(freq)) %>%
-  mutate(previous_idents = factor(previous_idents, levels = sort(unique(B.gcpc$previous_idents)))) %>% 
-  ggplot(aes(x = previous_idents, y = proport, fill = new_idents))+
-  geom_col(position = "stack", color = 'black')+
-  theme(axis.text.x=element_text(angle = 45, hjust = 1))+
-  scale_fill_manual(values = c(RColorBrewer::brewer.pal(12, "Set3"), "lightblue", "darkgreen"))
-
-```
-
-#### h5ad for scanpy
-We create an h5ad file of the RNA assay for use in scanpy and PAGA.
-```{r scanpy, eval = FALSE}
-var_genes <- B.gcpc[["integrated"]]@var.features
-B.gcpc[["RNA"]]@meta.features["highly_variable"] <- rownames(B.gcpc[["RNA"]]@meta.features) %in% var_genes
-sceasy::convertFormat(B.gcpc, from="seurat", to="anndata", outFile= paste0(parent.directory, "sct_seurat_gcpc_clustered.h5ad"), main_layer = "counts", transfer_layers = "data")
-dir.create(paste0(parent.directory, "/graphs_gcpc/"))
-Matrix::writeMM(obj = B.gcpc@graphs$annoy_fuzzy, file = paste0(parent.directory, "/graphs_gcpc/fuzzy.mtx"))
-Matrix::writeMM(obj = B.gcpc@graphs$annoy_nn_cosine, file = paste0(parent.directory, "/graphs_gcpc/cosine.mtx"))
-
-```
