@@ -1,0 +1,13 @@
+{
+	"n_targets": 227979,
+	"n_bootstraps": 0,
+	"n_processed": 59490895,
+	"n_pseudoaligned": 25714165,
+	"n_unique": 7612331,
+	"p_pseudoaligned": 43.2,
+	"p_unique": 12.8,
+	"kallisto_version": "0.44.0",
+	"index_version": 10,
+	"start_time": "Sat Oct  3 17:25:59 2020",
+	"call": "kallisto quant -i /Volumes/SanDiskSSD/henrickson_lab/projects/kallisto_human_index/transcriptome.idx -o D1-16_S25_ME_L00N_kallisto -t 6 /Volumes/SanDiskSSD/bar-or_lab/projects/rui_stimulation/raw_data/merged/D1-16_S25_ME_L00N_R1_001.fastq.gz /Volumes/SanDiskSSD/bar-or_lab/projects/rui_stimulation/raw_data/merged/D1-16_S25_ME_L00N_R2_001.fastq.gz"
+}
