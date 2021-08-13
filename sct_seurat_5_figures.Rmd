@@ -1,5 +1,5 @@
 ---
-title: "Tonsil Unstimulated B cell scRNA-seq"
+title: "Tonsil B cell scRNA-seq"
 subtitle: "Part 5: Figures"
 author: "Diego A. Espinoza"
 date: Last compiled on `r format(Sys.Date(), "%d %B %Y")`
@@ -36,9 +36,9 @@ require(Nebulosa)
 require(clusterProfiler)
 require(ggupset)
 require(pals)
-source("/Users/diegoespinoza/Documents/espinozada_lab/r_packages/seurat_helper_functions/seurathelper/R/seurat_helper_functions.R")
-parent.directory <- "/Volumes/SanDiskSSD/bar-or_lab/projects/tonsil_project/analysis/sct_seurat/"
-figure_directory <- "/Users/diegoespinoza/Documents/bar-or_lab/projects/tonsil_project/manuscript/figures_20210812/"
+source("seurat_helper_functions.R")
+parent.directory <- "intermediate/"
+figure_directory <- "figures/"
 dir.create(figure_directory)
 rerun_analysis <- FALSE
 
@@ -229,7 +229,7 @@ Idents(B.combined) <- "cluster_names"
 
 fig2a <- DoGenesetHeatmap(B.combined, assay = "regulons", diff_exp_results = diff_exp_regulons, group.by = "cluster_names", scale_rows = TRUE, auc_choice = 0.85, plot_all = FALSE, y_text_size = label_size)
 
-regulon_dataframe <- read.csv("/Volumes/SanDiskSSD/bar-or_lab/projects/tonsil_project/analysis/sct_seurat/aucell/Bint_pyscenic_regulons_merged.csv")
+regulon_dataframe <- read.csv("intermediate/Bint_pyscenic_regulons_merged.csv")
 
 regulon_dataframe %>%
   dplyr::filter(Targets %in% c("CCL4", "CCL3")) %>%
@@ -261,7 +261,7 @@ fig2c <- eulerr::euler(combinations = list(
   REL = myc_fosl1_rel_df %>% filter(TF=="REL") %>% select(Targets) %>% unlist())) %>%
   plot(fills = venn_color_scale, quantities = list(type =  "counts"))
 
-hm <- read.gmt(gmtfile = "~/Documents/bar-or_lab/projects/tonsil_project/analysis/supplementary_information/genesets/molsigdb/h.all.v7.1.symbols.gmt")
+hm <- read.gmt(gmtfile = "molsigdb/h.all.v7.1.symbols.gmt")
 TFs_for_enrich <- c("MYC", "FOSL1", "REL")
 
 MYC_genes <- myc_fosl1_rel_df %>% filter(TF=="MYC") %>% select(Targets) %>% unlist()
@@ -402,24 +402,23 @@ write.table(B_RNA_markers, file = paste0(figure_directory, "TableS2.txt"), sep =
 ```
 
 
-### Table S3
-```{r table s3, eval = TRUE}
-write.table(diff_exp_regulons, file = paste0(figure_directory, "TableS3.txt"), sep = "\t", quote = FALSE, row.names = FALSE)
-
+### Table S5
+```{r table s5, eval = TRUE}
+write.table(diff_exp_regulons, file = paste0(figure_directory, "TableS5.txt"), sep = "\t", quote = FALSE, row.names = FALSE)
 ```
 
-### Table S4
-```{r table s4, eval = TRUE}
+### Table S6
+```{r table s6, eval = TRUE}
 sum(assoRes$pvalue < 0.01)
 dim(assoRes)
-write.table(assoRes, file = paste0(figure_directory, "TableS4.txt"), sep = "\t", quote = FALSE, row.names = FALSE)
+write.table(assoRes, file = paste0(figure_directory, "TableS6.txt"), sep = "\t", quote = FALSE, row.names = FALSE)
 ```
 
 
 ### Figure S1
 Here we can visualize the percent.mt, percent.dissoc, and nFeature_RNA as a function of nCount_RNA
 ```{r figs1, eval = TRUE, include = TRUE, results = "hide", warning = FALSE, fig.height=8, fig.width=12}
-load("/Volumes/SanDiskSSD/bar-or_lab/projects/tonsil_project/analysis/all_preprocessing_310/raw_Seurat_object_list.RData")
+load("intermediate/raw_Seurat_object_list.RData")
 
 donor_color_pal <- RColorBrewer::brewer.pal(5, "Set1")
 
@@ -600,6 +599,4 @@ fig_s7
 pdf(file = paste0(figure_directory, "FigureS7.pdf"), width = 9, height = 6)
 fig_s7
 dev.off()
-
-
 ```

@@ -1,6 +1,6 @@
 ---
-title: "Tonsillar B cell scRNA-seq"
-subtitle: "Slingshot on two paths, attempt deux"
+title: "Tonsil B cell scRNA-seq"
+subtitle: "Slingshot"
 author: "Diego A. Espinoza"
 date: Last compiled on `r format(Sys.Date(), "%d %B %Y")`
 output:
@@ -31,8 +31,8 @@ require(mgcv)
 require(slingshot)
 require(tradeSeq)
 require(patchwork)
-source("~/Documents/espinozada_lab/r_packages/seurat_helper_functions/seurathelper/R/seurat_helper_functions.R")
-parent.directory <- "/Volumes/SanDiskSSD/bar-or_lab/projects/tonsil_project/analysis/sct_seurat/"
+source("seurat_helper_functions.R")
+parent.directory <- "intermediate/"
 
 cluster_heatmap <- function(my_data_frame, clusters = 3, max_zed = 3, plot_rownames = FALSE, color_brewer = "Set1", label_features = NULL, y_text_size = 10, get_clusters = FALSE, dist_method = "euclidean"){
   my_data_frame <- as.data.frame(t(scale(t(my_data_frame))))
@@ -360,109 +360,5 @@ gene_heatmap
 ```
 
 
-### B.4 GEA
-```{r GEA, eval = FALSE, warning=FALSE, message=FALSE}
-require(clusterProfiler)
 
-btms <- clusterProfiler::read.gmt("/Volumes/SanDiskSSD/bar-or_lab/projects/databases/btm/BTM_for_GSEA_20131008.gmt")
-# btms_names <- btms %>% dplyr::group_by(term) %>% dplyr::group_keys() %>% dplyr::pull(term)
-# btms_list <- btms %>%
-#   dplyr::group_by(term) %>%
-#   dplyr::group_split() %>% 
-#   lapply(., "[[", 2)
-# names(btms_list) <- btms_names
-
-
-hm <- read.gmt(gmtfile = "~/Documents/bar-or_lab/projects/tonsil_project/analysis/supplementary_information/genesets/molsigdb/h.all.v7.1.symbols.gmt")
-hm_names <- hm %>% dplyr::group_by(term) %>% dplyr::group_keys() %>% dplyr::pull(term)
-hm_list <- hm %>%
-  dplyr::group_by(term) %>%
-  dplyr::group_split() %>%
-  lapply(., "[[", 2)
-names(hm_list) <- hm_names
-
-
-
-
-tradeseq_genesets <- cluster_heatmap(predicted_smoothers_wide, max_zed = 3, clusters = num_clusters, get_clusters = TRUE)
-p_adjust_choice <- 0.05
-hm_enrichment_results <- lapply(1:num_clusters, function(i){
-  target_genes <- tradeseq_genesets %>% filter(cluster == i) %>% pull(gene)
-  target_genes <- target_genes[target_genes %in% hm$gene]
-  temp_result <- clusterProfiler::enricher(target_genes, TERM2GENE=hm)
-  if(sum(temp_result@result$p.adjust < p_adjust_choice) < 1){
-    return(NULL)
-  } else{
-    return(temp_result)
-  }
-})
-names(hm_enrichment_results) <- paste0("cluster_", 1:num_clusters)
-
-btm_enrichment_results <- lapply(1:num_clusters, function(i){
-  target_genes <- tradeseq_genesets %>% filter(cluster == i) %>% pull(gene)
-  target_genes <- target_genes[target_genes %in% btms$gene]
-  temp_result <- clusterProfiler::enricher(target_genes, TERM2GENE=btms)
-  if(sum(temp_result@result$p.adjust < p_adjust_choice) < 1){
-    return(NULL)
-  } else{
-    return(temp_result)
-  }
-})
-names(btm_enrichment_results) <- paste0("cluster_", 1:num_clusters)
-
-dotplot_list <- lapply(1:length(btm_enrichment_results), function(i){
-  if(is.null(hm_enrichment_results[[i]])){
-    return(NULL)
-  }
-  my_color <- cluster_palette[cluster_palette$cluster ==i, "colors"]
-  gea_dotplot(btm_enrichment_results[[i]], fill_color = my_color)
-})
-dotplot_list <- dotplot_list[lengths(dotplot_list)>0]
-gea_plots <- patchwork::wrap_plots(dotplot_list) + patchwork::plot_layout(ncol = 1)
-gea_plots
-
-```
-
-
-```{r graph idea, eval = FALSE}
-regulon_dataframe <- read.csv("/Volumes/SanDiskSSD/bar-or_lab/projects/tonsil_project/analysis/sct_seurat/aucell/Bint_pyscenic_regulons_merged.csv")
-
-regulon_dataframe %>%
-    dplyr::filter(TF %in% gsub("_regulon", "", best_genesets_1)) %>%
-    dplyr::mutate(occurrence = 1) %>%
-    pivot_wider(id_cols = TF, names_from = Targets, values_from = occurrence, values_fill = 0) %>%
-    column_to_rownames(var = "TF") -> regulon_dataframe_wide
-
-jaccard_distances <- proxy::dist(regulon_dataframe_wide, method = "jaccard")
-
-mds_coordinates <- cmdscale(as.matrix(jaccard_distances))
-mds_coordinates <- as.data.frame(mds_coordinates)
-mds_coordinates$gene <- rownames(mds_coordinates)
-
-cluster_colors <- cluster_heatmap(imputed_df_1_wide, max_zed = 3, clusters = 6, label_features = rownames(imputed_df_1_wide), y_text_size = 7, get_clusters = TRUE) %>% mutate(gene = gsub("_regulon", "", gene))
-
-mds_coordinates <- left_join(mds_coordinates, cluster_colors, by = "gene")
-
-ggplot(mds_coordinates, aes(x = V1, y = V2, color = cluster))+
-  geom_point()+
-  scale_color_manual(values = RColorBrewer::brewer.pal(6, "Set1"))
-
-umap_coordinates <- data.frame(gene = names(jaccard_distances), uwot::umap(jaccard_distances, verbose = TRUE))
-umap_coordinates <- left_join(umap_coordinates, cluster_colors, by = "gene")
-
-regulon_umap <- ggplot(umap_coordinates, aes(x = X1, y = X2, color = cluster))+
-  geom_point()+
-  scale_color_manual(values = RColorBrewer::brewer.pal(6, "Set3"))+
-  theme_cowplot()+
-  xlab("UMAP 1")+
-  ylab("UMAP 2")
-regulon_umap
-
-```
-
-
-```{r figure 3, eval = FALSE, fig.height=11, fig.width=8.5}
-(base_dimplot_paths + pt_dimplot)/ ((wrap_plots(gene_heatmap, regulon_heatmap, ncol = 1) | wrap_plots(gea_plots, regulon_umap, ncol = 1))+plot_layout(widths = c(4,3)))+plot_layout(heights = c(1,2.5))
-
-```
 
