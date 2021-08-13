@@ -1,0 +1,227 @@
+---
+title: "B stim Data using kallisto | tximport | DESeq2 pipeline"
+author: "Diego A. Espinoza"
+date: Compiled on `r format(Sys.Date(), "%d %B %Y")`
+output:
+  html_document:
+    code_folding: show
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+require(dplyr)
+require(magrittr)
+require(tidyr)
+require(tibble)
+require(ggplot2)
+require(ggrepel)
+suppressPackageStartupMessages(require(SummarizedExperiment))
+require(DESeq2)
+require(tximport)
+source("~/Documents/bar-or_lab/projects/Bcytokine_project/analysis/rna_seq_functions.R")
+```
+
+# Loading the data from kallisto output
+In summary, B cells from 3 patients underwent 3 stimulation conditions or nil. They were: BCR stim, CD40L stim, CD40L + BCR stim. These 3 conditions plus a non-stimulated control were then used for RNA-seq (12 samples total). Data was pseudoaligned to the human transcriptome using kallisto. Here we will load data output from the kallisto run. We will use tximport to load our data into DESeq2, where we will then perform differential expression analysis.
+```{r load kallisto data, warning=FALSE, message=FALSE, eval = TRUE}
+#get metadata
+metadata_path <- "stim_metadata.xlsx"
+bstim_metadata <- readxl::read_excel(path = metadata_path) %>%
+  dplyr::mutate(patient = factor(patient, levels = c("D1", "D2", "D3")),
+         activation = factor(activation, levels = c("Nil",
+                                                    "CD40L",
+                                                    "CD40L_BCR",
+                                                    "BCR")))
+
+#load abundances from h5 files output from kallisto
+parent_directory <- "kallisto_output"
+kallisto_directories <- list.files(parent_directory, full.names = TRUE) %>%
+  grep(pattern = "L00N", value = TRUE) %>%
+  paste0(., "/abundance.h5")
+kallisto_directories <- kallisto_directories[kallisto_directories %in% paste0(parent_directory, "/", bstim_metadata$filename, "/abundance.h5")]
+kallisto_sample_names <- list.files(parent_directory, full.names = FALSE) %>%
+  grep(pattern = "L00N", value = TRUE)
+kallisto_sample_names <- kallisto_sample_names[kallisto_sample_names %in% bstim_metadata$filename]
+
+names(kallisto_directories) <- kallisto_sample_names
+
+#load transcript to gene_id dataframe from database build step
+tx_df <- read.csv("gencode_v33_master.csv", stringsAsFactors = FALSE)
+tx_df <- tx_df[,c("tx_id", "gene_id")]
+
+#use tximport to set data up for input into deseq2
+txi_kallisto <- tximport::tximport(kallisto_directories, type = "kallisto", ignoreTxVersion = TRUE, tx2gene = tx_df)
+
+#import data from tximport into DESeq2, setting the patient as a covariate and the celltype_treatment level as the factor being tested (can draw different contrasts from this later)
+bstim_dds <- DESeq2::DESeqDataSetFromTximport(txi_kallisto, bstim_metadata %>% as_tibble(), design = ~patient+activation)
+
+#build DESeq2 model using all samples
+bstim_dds <- DESeq2::DESeq(bstim_dds)
+
+#this gene table will be used to convert ensembl IDs into gene names for usage with other data sources
+gene_table <-  read.csv("gencode_v33_master_concatenated.csv", stringsAsFactors = FALSE) %>% select(gene_id, gene_name, entrez_id)
+
+```
+
+# Differential expression analysis using DESeq2
+We next perform a list of comparisions using DESeq2. We will compare all our stimulation conditions to the Nil (no stim) condition.
+```{r deseq2 analysis, message=FALSE, warning=FALSE, eval = TRUE}
+
+comparisons <- list(c("activation", "CD40L", "Nil"),
+                    c("activation", "BCR", "Nil"),
+                    c("activation", "CD40L_BCR", "Nil"))
+comparisons_strings <- lapply(comparisons, function(x){paste0(x[2], " vs ", x[3])}) %>% unlist
+
+bstim_dds_results <- lapply(1:length(comparisons), function(i){
+  return(results(bstim_dds, contrast = comparisons[[i]]))
+})
+
+bstim_dds_results_df <- lapply(1:length(bstim_dds_results), function(i){
+  bstim_dds_results[[i]] %>%
+    as.data.frame %>%
+    rownames_to_column(var = "gene_id") %>%
+    dplyr::mutate(comparison = comparisons_strings[i]) %>%
+    left_join(gene_table, by = "gene_id")
+})
+names(bstim_dds_results_df) <- c("LvN", "BvN", "CSvN")
+
+bstim_rlog <- rlog(bstim_dds, blind = TRUE)
+
+```
+
+## PCA plots
+We next plot our samples on PCs 1, 2, 3, and 4 (PCA was performed on the rlog values).
+```{r distplots, fig.show="hold"}
+names(assays(bstim_rlog)) <- "rlog"
+plotPCA_from_online(bstim_rlog, assay_choice = "rlog", intgroup=c("activation", "patient"), returnData = TRUE) -> x
+ggplot(x, aes(x = PC1, y = PC2, color = activation, shape = patient))+geom_point(size = 6)
+ggplot(x, aes(x = PC3, y = PC4, color = activation, shape = patient))+geom_point(size = 6)
+```
+
+## MA Plots
+After performing our comparisons, we now have a set of p-values (adjusted and non-adjusted), along with the log2 fold changes between conditions specified. We now plot all genes in MA plots for each comparison, with differentially expressed genes (padj < 0.05 and |log2FC| > 1) labelled in red. We plot the shrunken log fold changes as well.
+``` {r MA plots, eval = FALSE, fig.show="hold", message=FALSE, warning=FALSE, fig.width = 12, fig.height = 20}
+
+plot_list <- lapply(1:length(bstim_dds_results_df), function(i){
+  plot_1 <- sig_MA_plot(bstim_dds_results_df[[i]], title = bstim_dds_results_df[[i]]$comparison, p_val_choice = 0.01, log2FC_choice = 1, label_top_genes = 20)
+  return(plot_1)
+})
+cowplot::plot_grid(plotlist = plot_list, ncol = 1)
+
+```
+
+## DE genes
+```{r DE genes, message = FALSE, warning=FALSE}
+
+#set significance cutoff for adjusted p-values
+significance_cutoff <- 0.05
+
+#get relevant comparisons
+CSvN <- bstim_dds_results_df$CSvN %>%dplyr::rename_at(vars(!contains('gene')), ~paste0("CSvN_", .))
+BvN <- bstim_dds_results_df$BvN %>%dplyr::rename_at(vars(!contains('gene')), ~paste0("BvN_", .))
+LvN <- bstim_dds_results_df$LvN %>% dplyr::rename_at(vars(!contains('gene')), ~paste0("LvN_", .)) 
+
+#join the comparisons together
+LvN %>%
+  dplyr::left_join(CSvN, by = c("gene_id","gene_name")) %>%
+  dplyr::left_join(BvN, by = c("gene_id","gene_name")) -> joined_comparisons
+
+joined_comparisons %>%
+  dplyr::filter(LvN_padj < significance_cutoff) %>%
+  dplyr::filter(LvN_log2FoldChange > 0) -> L_UP
+
+joined_comparisons %>%
+  dplyr::filter(CSvN_padj < significance_cutoff) %>%
+  dplyr::filter(CSvN_log2FoldChange > 0) -> CS_UP
+
+joined_comparisons %>%
+  dplyr::filter(BvN_padj < significance_cutoff) %>%
+  dplyr::filter(BvN_log2FoldChange > 0) -> B_UP
+
+
+L_UP %>%
+  dplyr::filter(!((BvN_log2FoldChange > 0) & (BvN_padj < significance_cutoff))) %>%
+  dplyr::filter(!((CSvN_log2FoldChange > 0) & (CSvN_padj < significance_cutoff))) -> L_UP_ONLY
+
+B_UP %>%
+  dplyr::filter(!((LvN_log2FoldChange > 0) & (LvN_padj < significance_cutoff))) %>%
+  dplyr::filter(!((CSvN_log2FoldChange > 0) & (CSvN_padj < significance_cutoff))) -> B_UP_ONLY
+
+
+L_UP_only_genes <- unique(L_UP_ONLY$gene_name)
+L_UP_only_genes <- L_UP_only_genes[!is.na(L_UP_only_genes)]
+B_UP_only_genes <- unique(B_UP_ONLY$gene_name)
+B_UP_only_genes <- B_UP_only_genes[!is.na(B_UP_only_genes)]
+CS_UP_genes <- unique(CS_UP$gene_name)
+
+
+```
+
+## Finding gene signatures.
+
+```{r gene sigs, fig.show="hold", fig.height=8}
+
+as.data.frame(assay(bstim_rlog)) %>% rownames_to_column(var = "gene_id") %>% pivot_longer(cols = -gene_id, names_to = "sample_name", values_to = "rlog_val") %>% group_by(gene_id) %>% dplyr::mutate(scale_rlog = as.vector(scale(rlog_val))) -> bstim_rlog_long
+
+sample_order <- bstim_metadata$sample_name %>% unique() %>% stringi::stri_reverse() %>% sort() %>% stringi::stri_reverse()
+
+B_UP_ONLY %>% dplyr::top_n(n = 50, wt = -BvN_padj)-> B_UP_top50
+B_UP_top50$gene_name <- ifelse(is.na(B_UP_top50$gene_name), B_UP_top50$gene_id, B_UP_top50$gene_name)
+bstim_rlog_long %>%
+  inner_join(B_UP_top50, by = "gene_id") %>%
+  dplyr::rename(filename = sample_name) %>%
+  left_join(bstim_metadata, by = "filename") %>%
+  mutate(gene_name = factor(gene_name, levels = B_UP_top50$gene_name)) %>%
+  mutate(sample_name = factor(sample_name, levels = sample_order)) %>%
+  ggplot(aes(x = sample_name, y = gene_name, fill = scale_rlog))+
+  geom_tile(color = "black")+
+  scale_fill_viridis_c()+
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))+
+  ggtitle("Top 50 B ONLY UP genes")
+
+L_UP_ONLY %>% dplyr::top_n(n = 50, wt = -LvN_padj)-> L_UP_top50
+L_UP_top50$gene_name <- ifelse(is.na(L_UP_top50$gene_name), L_UP_top50$gene_id, L_UP_top50$gene_name)
+bstim_rlog_long %>%
+  inner_join(L_UP_top50, by = "gene_id") %>%
+  dplyr::rename(filename = sample_name) %>%
+  left_join(bstim_metadata, by = "filename") %>%
+  mutate(gene_name = factor(gene_name, levels = L_UP_top50$gene_name)) %>%
+  mutate(sample_name = factor(sample_name, levels = sample_order)) %>%
+  ggplot(aes(x = sample_name, y = gene_name, fill = scale_rlog))+
+  geom_tile(color = "black")+
+  scale_fill_viridis_c()+
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))+
+  ggtitle("Top 50 L ONLY UP genes")
+
+CS_UP %>% dplyr::top_n(n = 50, wt = -CSvN_padj)-> CS_UP_top50
+CS_UP_top50$gene_name <- ifelse(is.na(CS_UP_top50$gene_name), CS_UP_top50$gene_id, CS_UP_top50$gene_name)
+bstim_rlog_long %>%
+  inner_join(CS_UP_top50, by = "gene_id") %>%
+  dplyr::rename(filename = sample_name) %>%
+  left_join(bstim_metadata, by = "filename") %>%
+  mutate(gene_name = factor(gene_name, levels = CS_UP_top50$gene_name)) %>%
+  mutate(sample_name = factor(sample_name, levels = sample_order)) %>%
+  ggplot(aes(x = sample_name, y = gene_name, fill = scale_rlog))+
+  geom_tile(color = "black")+
+  scale_fill_viridis_c()+
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))+
+  ggtitle("Top 50 CS UP genes")
+
+
+```
+
+
+## Writing genes to file
+```{r genesets to file, eval = TRUE}
+dir.create("gene_list_results")
+
+target_directory <- "gene_list_results"
+write.table(x = L_UP_only_genes, file = paste0(target_directory, "/CD40L_up_only.txt"), sep = "\t", quote = FALSE, row.names = FALSE, col.names = FALSE)
+write.table(x = B_UP_only_genes, file = paste0(target_directory, "/BCR_up_only.txt"), sep = "\t", quote = FALSE, row.names = FALSE, col.names = FALSE)
+write.table(x = CS_UP_genes, file = paste0(target_directory, "/costim_up.txt"), sep = "\t", quote = FALSE, row.names = FALSE, col.names = FALSE)
+
+full_table <- rbind(data.frame(gene_name = L_UP_only_genes, set = "CD40L_up_only"),
+                    data.frame(gene_name = B_UP_only_genes, set = "BCR_up_only"),
+                    data.frame(gene_name = CS_UP_genes, set = "COSTIM_up"))
+write.table(x = full_table, file = paste0(target_directory, "/TableS4.txt"), sep = "\t", quote = FALSE, row.names = FALSE, col.names = TRUE)
+```
