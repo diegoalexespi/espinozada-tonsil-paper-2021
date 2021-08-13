@@ -1,5 +1,5 @@
 ---
-title: "Tonsil Unstimulated B cell scRNA-seq Preprocessing"
+title: "Tonsil B cell scRNA-seq Preprocessing"
 subtitle: "Seurat extraction of 10X files and filtering"
 author: "Diego A. Espinoza"
 date: Last compiled on `r format(Sys.Date(), "%d %B %Y")`
@@ -24,6 +24,7 @@ require(kableExtra)
 require(cowplot)
 require(readr)
 require(readxl)
+rerun_analysis <- FALSE #change to TRUE if running for first time
 ```
 
 ## A. Introduction
@@ -47,13 +48,13 @@ kable(experimental_design, title = "Experimental Design", align = "c", bootstrap
 
 ### Preparing the raw data for Seurat
 We will now begin by loading in the raw counts for the 5 experimental samples above. This is accomplished by the Read10X function of the Seurat package. Next, Seurat objects must be created. In order to conserve memory, we will also eliminate the prior "*.data" files. The objects are created such that each gene/RNA will only be kept if present in 3 or more cells, and each cell will only be kept if it express at least 200 unique RNAs. 
-```{r loading data, eval = FALSE, include = TRUE, results = "hide", warning = FALSE}
+```{r loading data, eval = rerun_analysis, include = TRUE, results = "hide", warning = FALSE}
 #First, we load in the data using Read10X
-TC124.unstim.1.data <- Read10X(data.dir = "/Volumes/SanDiskSSD/bar-or_lab/projects/tonsil_project/raw_data/cellranger_3_1_0/filtered/Amit1/", strip.suffix = TRUE)
-TC124.unstim.2.data <- Read10X(data.dir = "/Volumes/SanDiskSSD/bar-or_lab/projects/tonsil_project/raw_data/cellranger_3_1_0/filtered/Amit7/", strip.suffix = TRUE)
-TC124.unstim.3.data <- Read10X(data.dir = "/Volumes/SanDiskSSD/bar-or_lab/projects/tonsil_project/raw_data/cellranger_3_1_0/filtered/Amit8/", strip.suffix = TRUE)
-TC125.unstim.data <- Read10X(data.dir = "/Volumes/SanDiskSSD/bar-or_lab/projects/tonsil_project/raw_data/cellranger_3_1_0/filtered/Amit2/", strip.suffix = TRUE)
-TC126.unstim.data <- Read10X(data.dir = "/Volumes/SanDiskSSD/bar-or_lab/projects/tonsil_project/raw_data/cellranger_3_1_0/filtered/Amit3/", strip.suffix = TRUE)
+TC124.unstim.1.data <- Read10X(data.dir = "filtered/Amit1/", strip.suffix = TRUE)
+TC124.unstim.2.data <- Read10X(data.dir = "filtered/Amit7/", strip.suffix = TRUE)
+TC124.unstim.3.data <- Read10X(data.dir = "filtered/Amit8/", strip.suffix = TRUE)
+TC125.unstim.data <- Read10X(data.dir = "filtered/Amit2/", strip.suffix = TRUE)
+TC126.unstim.data <- Read10X(data.dir = "filtered/Amit3/", strip.suffix = TRUE)
 
 B.names <- c("TC124.1", "TC124.2", "TC124.3", "TC125", "TC126")
 B.list <- list(TC124.unstim.1.data, TC124.unstim.2.data, TC124.unstim.3.data, TC125.unstim.data, TC126.unstim.data)
@@ -69,8 +70,8 @@ rm(list = ls()[grepl(".data", ls())])
 
 ### Addition of gene information
 In addition, we add the "percent.mt" information to each cell in each dataset, which details what percentage of the molecular counts are derived from mitochondrial genes. Because our samples are FACS-derived, we also determine the percentage of molecular counts being derived from dissociation-induced genes (van den Brink, et al. Single-cell sequencing reveals dissociation-induced gene expression in tissue subpopulations. Nat Methods 2017).
-```{r supplementary information, eval = FALSE}
-read_excel("~/Documents/bar-or_lab/projects/tonsil_project/analysis/supplementary_information/dissociation_genes.xlsx") %>% select('Human ID') %>% na.omit %>% pull("Human ID") -> dissociation.genes
+```{r supplementary information, eval = rerun_analysis}
+read_excel("dissociation_genes.xlsx") %>% select('Human ID') %>% na.omit %>% pull("Human ID") -> dissociation.genes
 
 for(i in 1:length(B.list)){
   temp.dissoc.genes <- dissociation.genes[dissociation.genes %in% rownames(B.list[[i]])]
@@ -82,7 +83,7 @@ for(i in 1:length(B.list)){
 #This removes the unused data thus far
 rm(i, temp.dissoc.genes)
 
-save(B.list, file = "/Volumes/SanDiskSSD/bar-or_lab/projects/tonsil_project/analysis/all_preprocessing_310/raw_Seurat_object_list.RData")
+save(B.list, file = "intermediate/raw_Seurat_object_list.RData")
 
 ```
 
@@ -90,7 +91,7 @@ save(B.list, file = "/Volumes/SanDiskSSD/bar-or_lab/projects/tonsil_project/anal
 ### Scatter Plots
 Here we can visualize the percent.mt, percent.dissoc, and nFeature_RNA as a function of nCount_RNA
 ```{r scatter plots, eval = TRUE, include = TRUE, results = "hide", warning = FALSE, fig.height=18, fig.width=12}
-load("/Volumes/SanDiskSSD/bar-or_lab/projects/tonsil_project/analysis/all_preprocessing_310/raw_Seurat_object_list.RData")
+load("intermediate/raw_Seurat_object_list.RData")
 
 donor_color_pal <- RColorBrewer::brewer.pal(5, "Set3")
 
@@ -132,13 +133,13 @@ plot_grid(plotlist = vln.plotlist, ncol = 1)
 
 
 Here, we subset the Seurat objects based on the number of unique RNAs they express, the percent of UMIs derived from mitochondrial genes, and the percent of UMIs derived from dissociating-associated genes.
-```{r subsetting, eval = FALSE}
+```{r subsetting, eval = rerun_analysis}
 
 B.list <- lapply(1:length(B.list), function(i){
   return(subset(B.list[[i]], subset = nFeature_RNA < filters.nFeature_RNA.hi & percent.mt < filters.percent.mt & percent.dissoc < filters.percent.dissoc))
 })
 
-save(B.list, file = "/Volumes/SanDiskSSD/bar-or_lab/projects/tonsil_project/analysis/all_preprocessing_310/processed_Seurat_object_list.RData")
+save(B.list, file = "intermediate/processed_Seurat_object_list.RData")
 ```
 
 ## C. Next steps
