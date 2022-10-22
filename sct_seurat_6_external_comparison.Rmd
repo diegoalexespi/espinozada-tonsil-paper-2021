@@ -1,0 +1,64 @@
+---
+title: "Tonsil B cell scRNA-seq"
+subtitle: "Part X: Comparison/exploration of external datasets"
+author: "Diego A. Espinoza"
+date: Last compiled on `r format(Sys.Date(), "%d %B %Y")`
+output:
+  html_document:
+    code_folding: hide
+    fig_caption: yes
+    df_print: paged
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(autodep        = TRUE,
+                      echo           = TRUE,
+                      error          = FALSE,
+                      fig.height     = 8,
+                      message        = FALSE,
+                      warning        = FALSE)
+```
+
+```{r echo=TRUE, message=FALSE, results='hide', warning=FALSE}
+require(magrittr)
+require(knitr)
+require(dplyr)
+require(tidyr)
+require(tibble)
+require(ggplot2)
+require(Seurat)
+require(cowplot)
+require(readr)
+require(readxl)
+require(patchwork)
+require(Nebulosa)
+require(clusterProfiler)
+require(ggupset)
+require(pals)
+parent.directory <- "external_data/"
+figure_directory <- "figures/"
+dir.create(figure_directory)
+rerun_analysis <- FALSE
+
+feature_size <- 6
+```
+
+
+### Loading King et al. 2021 data
+We download the data from [ArrayExpress](https://www.ebi.ac.uk/arrayexpress/files/E-MTAB-9005/E-MTAB-9005.processed.4.zip)
+```{r new clust idents, eval = TRUE, fig.width=12, fig.height=8}
+tonsil_bcells <- readRDS(paste0(parent.directory, "EMTAB9005/data/SEURAT_OBJECTS/HumanTonsil_BCells_scRNA_SeuratObject.rds"))
+tonsil_membcells <- readRDS(paste0(parent.directory, "EMTAB9005/data/SEURAT_OBJECTS/HumanTonsil_MemoryBCells_scRNA_SeuratObject.rds"))
+DimPlot(tonsil_bcells, label = TRUE, repel = TRUE, reduction = "umap")
+VlnPlot(tonsil_bcells, features = c("CCL4", "CCL3"), ncol = 2, pt.size = 0.1)
+VlnPlot(tonsil_bcells, features = c("MYC", "MIR155HG"), ncol = 2, pt.size = 0.01)
+VlnPlot(tonsil_bcells, features = c("RASSF6", "BCL6"), ncol = 2, pt.size = 0.01)
+VlnPlot(tonsil_bcells, features = c("LGALS1", "LGALS3"), ncol = 2, pt.size = 0.01)
+
+figs8 <- VlnPlot(tonsil_bcells, features = c("CCL4", "CCL3"), ncol = 2, pt.size = 0.1)
+
+pdf(file = paste0(figure_directory, "FigureS8.pdf"), width = 16, height = 8)
+figs8&xlab(NULL)
+dev.off()
+
+```

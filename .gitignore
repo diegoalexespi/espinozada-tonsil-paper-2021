@@ -6,4 +6,5 @@ filtered
 intermediate/*.RData
 *.Rproj
 *._molsigdb
+external_data/
 
