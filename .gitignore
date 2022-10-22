@@ -1,0 +1,9 @@
+.Rproj.user
+.Rhistory
+.RData
+.Ruserdata
+filtered
+intermediate/*.RData
+*.Rproj
+*._molsigdb
+
