@@ -33,12 +33,15 @@ require(Seurat)
 require(kableExtra)
 require(readr)
 require(readxl)
-source("seurat_helper_functions.R")
-parent.directory <- "intermediate//"
+require(pochi)
+dir.create(path = "intermediate")
+parent.directory <- "intermediate/"
 rerun_analysis <- FALSE
 ```
 
 ### Converting gene sets to .gmt files for use in AUCell
+We convert a selection of genesets to .gmt files so that we can use in
+downstream AUCell calculations more easily.
 ```{r score addition, eval = rerun_analysis, include = TRUE}
 
 #Cell cycle genes
@@ -72,9 +75,10 @@ full_list_names <- c("s_genes", "g2m_genes", "LZ_vitora_genes", "DZ_vitora_genes
 full_list_w_names <- lapply(1:length(full_list), function(i){return(c(full_list_names[i], "custom", full_list[[i]]))})
 max_size <- max(unlist(lapply(full_list_w_names, length)))
 
+dir.create(paste0(parent.directory, "aucell"))
 file.remove(paste0(parent.directory, "aucell/genesets.gmt"))
 lapply(full_list_w_names,
-       write,
+       base::write,
        file = paste0(parent.directory, "aucell/genesets.gmt"),
        append=TRUE,
        sep = ",",
@@ -84,7 +88,7 @@ final_geneset <- lapply(1:length(full_list), function(i){
   data.frame(geneset = full_list_names[i], genes = full_list[[i]])
 }) %>% do.call(rbind, .)
 
-write.table(final_geneset, file = paste0(parent.directory, "aucell/genesets_table.txt"))
+write.table(final_geneset, file = paste0(parent.directory, "aucell/genesets_table.txt"), quote = FALSE, row.names = FALSE)
 
 
 ```

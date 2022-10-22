@@ -5,7 +5,7 @@ author: "Diego A. Espinoza"
 date: Last compiled on `r format(Sys.Date(), "%d %B %Y")`
 output:
   html_document:
-    code_folding: hide
+    code_folding: show
     fig_caption: yes
     df_print: paged
 ---
@@ -31,7 +31,7 @@ require(cowplot)
 require(kableExtra)
 require(readr)
 require(readxl)
-source("seurat_helper_functions.R")
+require(pochi) #if not installed: devtools::install_github("diegoalexespi/pochi")
 parent.directory <- "intermediate/"
 rerun_analysis <- FALSE
 ```
@@ -40,16 +40,17 @@ rerun_analysis <- FALSE
 Here we take the preprocessed Seurat objects and eliminate T cells based on expression of at least 2 of CD3D, IL32, and CD2 transcripts. We merge the data from one of the patients (TC124) together, before then running SCTransform on each dataset independently. We next prepare for integration using the Seurat v3 pipeline. Note that it is computationally intensive. The actual integration itself, performed also, is quite computationally intensive as well.
 ```{r plot PCAs, eval = rerun_analysis, fig.show = "hold", fig.width = 8}
 load(file = "intermediate/processed_Seurat_object_list.RData")
+set.seed(42)
 for(i in 1:length(B.list)){
-  #get rid of T cell contamination using canonical T cell markers
-  if(all(c("CD3D", "IL32", "CD2") %in% rownames(B.list[[i]]))){
-    Tcell_barcodes <- names(which(Matrix::colSums(B.list[[i]][["RNA"]][c("CD3D", "IL32", "CD2")] > 0) > 1))
-    B.list[[i]] <- B.list[[i]][,!(colnames(B.list[[i]]) %in% Tcell_barcodes)]
-  }
+    #get rid of T cell contamination using canonical T cell markers
+    if(all(c("CD3D", "IL32", "CD2") %in% rownames(B.list[[i]]))){
+        Tcell_barcodes <- names(which(Matrix::colSums(B.list[[i]][["RNA"]][c("CD3D", "IL32", "CD2")] > 0) > 1))
+        B.list[[i]] <- B.list[[i]][,!(colnames(B.list[[i]]) %in% Tcell_barcodes)]
+    }
 }
 B.list <- list(merge(x = B.list[[1]], y = B.list[2:3]), B.list[[4]], B.list[[5]])
 B.list <- lapply(1:length(B.list), function(i){
-  return(SCTransform(B.list[[i]], verbose = TRUE))
+    return(SCTransform(B.list[[i]], verbose = TRUE))
 })
 save(B.list, file = paste0(parent.directory, "sct_seurat_list.RData"))
 B.features <- SelectIntegrationFeatures(object.list = B.list, nfeatures = 3000)
@@ -60,7 +61,7 @@ save(B.anchors, file = paste0(parent.directory, "sct_anchors.RData"))
 ```
 ```{r integration, eval = rerun_analysis}
 load(file = paste0(parent.directory, "sct_anchors.RData"))
-B.combined <- IntegrateData(anchorset = B.anchors, normalization.method = "SCT", do.cpp = T, dims = 1:40, verbose = TRUE) 
+B.combined <- IntegrateData(anchorset = B.anchors, normalization.method = "SCT", dims = 1:40, verbose = TRUE) 
 save(B.combined, file = paste0(parent.directory, "sct_integrated.RData"))
 ```
 
@@ -86,13 +87,13 @@ load(file = paste0(parent.directory, "sct_PCA.RData"))
 PC_list <- c("1:12", "13:24", "25:36", "37:48", "49:60")
 PC_names <- c("PCs 1:12", "PCs 13:24", "PCs 25:36", "PCs 37:48", "PCs 49:60")
 PCHM_list <- lapply(1:5, function(i) {
-  PCHM_name <- PC_names[i]
-  src <- c("#### {{PCHM_name}} {.unnumbered}",
-           "```{r PCHM_name-{{i}}, fig.width = 9, fig.height = 6}",
-           "DimHeatmap(B.combined, cells = 1000, dims = {{PC_list[[i]]}}, nfeatures = 10, balanced = TRUE, reduction = \"pca\")",
-           "```",
-           "")
-  knit_expand(text = src)
+    PCHM_name <- PC_names[i]
+    src <- c("#### {{PCHM_name}} {.unnumbered}",
+             "```{r PCHM_name-{{i}}, fig.width = 9, fig.height = 6}",
+             "DimHeatmap(B.combined, cells = 1000, dims = {{PC_list[[i]]}}, nfeatures = 10, balanced = TRUE, reduction = \"pca\")",
+             "```",
+             "")
+    knit_expand(text = src)
 })
 
 out <- knit_child(text = unlist(PCHM_list), options = list(echo = FALSE, cache = FALSE))
@@ -102,16 +103,16 @@ out <- knit_child(text = unlist(PCHM_list), options = list(echo = FALSE, cache =
 
 
 ### C.2 Building the kNN graph using uwot
-We next use a custom function, `BuildAnnoyUMAP` which calls the 'uwot' package implementation of UMAP. Briefly, this builds an approximate nearest neighbors graph (kNN) on the PCA or Harmony space (100 dimensions) using the annoy package (with cosine distance metric). We store the kNN graph, the cosine distance graph, and derive a shared-nearest-neighbor (SNN) graph from the kNN graph that is stored as well. We use the kNN to produce the UMAP dimensionality reduction coordinates, and we will keep the SNN for use in clustering downstream.
+We next use a custom function, `BuildAnnoyUMAP` which calls the 'uwot' package implementation of UMAP. Briefly, this builds an approximate nearest neighbors graph (kNN) on the PCA or Harmony space (100 dimensions) using the annoy package (with cosine distance metric). We store the kNN graph, the cosine distance graph, and derive a shared-nearest-neighbor (SNN) graph from the kNN graph that is stored as well. We also use this function to produce the UMAP dimensionality reduction coordinates, and we will keep the SNN for use in clustering downstream.
 ```{r UMAP & kNN/SNN, eval = rerun_analysis, include = TRUE}
 load(file = paste0(parent.directory, "sct_PCA.RData"))
 dims.to.use <- 1:35
-B.combined <- BuildAnnoyUMAP(B.combined,
-                             reduction = "pca",
-                             dims = dims.to.use,
-                             reduction_name = "pca_UMAP",
-                             reduction_key = "pcaumap_",
-                             return_graphs = TRUE)
+B.combined <- pochi::BuildAnnoyUMAP(object = B.combined,
+                                    reduction = "pca",
+                                    dims = dims.to.use,
+                                    reduction.name = "pca_UMAP",
+                                    reduction_key = "pcaumap_",
+                                    save.graphs = TRUE)
 ```
 
 ### C.3 Adding select scores
@@ -136,10 +137,10 @@ B.combined <- FindClusters(B.combined,
                            graph.name = "annoy_nn_snn",
                            verbose = TRUE)
 for(i in 1:length(B.resolutions)){
-  temp.slot <- paste0("annoy_nn_snn_res.", B.resolutions[i])
-  temp.clusterIDs <- B.combined[[temp.slot]][[1]]
-  temp.clusterIDs.levels <- sort(unique(as.numeric(as.character(temp.clusterIDs))))
-  B.combined[[temp.slot]] <- factor(temp.clusterIDs, levels = temp.clusterIDs.levels)
+    temp.slot <- paste0("annoy_nn_snn_res.", B.resolutions[i])
+    temp.clusterIDs <- B.combined[[temp.slot]][[1]]
+    temp.clusterIDs.levels <- sort(unique(as.numeric(as.character(temp.clusterIDs))))
+    B.combined[[temp.slot]] <- factor(temp.clusterIDs, levels = temp.clusterIDs.levels)
 }
 
 save(B.combined, file = paste0(parent.directory, "sct_clustered.RData"))
@@ -163,14 +164,14 @@ resolution.vector <- seq(0.5, 1.3, 0.1)
 n.resolutions <- length(resolution.vector)
 
 resdimplot_list <- lapply(1:n.resolutions, function(i) {
-  resolution.name <- resolution.vector[i]
-  temp.slot <- paste0("annoy_nn_snn_res.", resolution.name)
-  src <- c("#### {{temp.slot}} {.unnumbered}",
-           "```{r resdimplot-{{i}}, fig.width = 8, fig.height = 6}",
-           "DimPlot(B.combined, pt.size = 0.8, reduction = \"pca_UMAP\", group.by = \"{{temp.slot}}\", label = TRUE, label.size = 5, label.box = TRUE)",
-           "```",
-           "")
-  knit_expand(text = src)
+    resolution.name <- resolution.vector[i]
+    temp.slot <- paste0("annoy_nn_snn_res.", resolution.name)
+    src <- c("#### {{temp.slot}} {.unnumbered}",
+             "```{r resdimplot-{{i}}, fig.width = 8, fig.height = 6}",
+             "DimPlot(B.combined, pt.size = 0.8, reduction = \"pca_UMAP\", group.by = \"{{temp.slot}}\", label = TRUE, label.size = 5, label.box = TRUE)",
+             "```",
+             "")
+    knit_expand(text = src)
 })
 out <- knit_child(text = unlist(resdimplot_list), options = list(echo = FALSE, cache = FALSE))
 
@@ -191,13 +192,13 @@ genes.of.interest <- c("CCL4", "CCL3", "AICDA", "IGHD",
 n.genes <- length(genes.of.interest)
 
 geneplot_list <- lapply(1:n.genes, function(i) {
-  gene.name <- genes.of.interest[i]
-  src <- c("#### {{gene.name}} {.unnumbered}",
-           "```{r scoreplot-{{i}}, fig.width = 8, fig.height = 6}",
-           "VlnPlot(B.combined, pt.size = 0.02, features = \"{{gene.name}}\")",
-           "```",
-           "")
-  knit_expand(text = src)
+    gene.name <- genes.of.interest[i]
+    src <- c("#### {{gene.name}} {.unnumbered}",
+             "```{r scoreplot-{{i}}, fig.width = 8, fig.height = 6}",
+             "VlnPlot(B.combined, pt.size = 0.02, features = \"{{gene.name}}\")",
+             "```",
+             "")
+    knit_expand(text = src)
 })
 
 out <- knit_child(text = unlist(geneplot_list), options = list(echo = FALSE, cache = FALSE))
@@ -213,14 +214,14 @@ features.of.interest <- c("G2M.Score", "S.Score", "percent.mt", "percent.dissoc"
 n.features <- length(features.of.interest)
 
 featureplot_list <- lapply(1:n.features, function(i) {
-  feature.name <- features.of.interest[i]
-  #temp.slot <- paste0("harmony_annoy_nn_snn_res.", resolution.name)
-  src <- c("#### {{feature.name}} {.unnumbered}",
-           "```{r geneplot-{{i}}, fig.width = 8, fig.height = 6}",
-           "VlnPlot(B.combined, pt.size = 0.02, features = \"{{feature.name}}\")",
-           "```",
-           "")
-  knit_expand(text = src)
+    feature.name <- features.of.interest[i]
+    #temp.slot <- paste0("harmony_annoy_nn_snn_res.", resolution.name)
+    src <- c("#### {{feature.name}} {.unnumbered}",
+             "```{r geneplot-{{i}}, fig.width = 8, fig.height = 6}",
+             "VlnPlot(B.combined, pt.size = 0.02, features = \"{{feature.name}}\")",
+             "```",
+             "")
+    knit_expand(text = src)
 })
 
 out <- knit_child(text = unlist(featureplot_list), options = list(echo = FALSE, cache = FALSE))
@@ -235,10 +236,10 @@ We can also show quantification of the percntage donor within each cluster.
 tibble(donor = B.combined$donor, cluster = B.combined@active.ident) %>% group_by(donor, cluster) %>% tally() %>% mutate(freq = n/sum(n)) %>% group_by(cluster) %>% mutate(freq = freq/sum(freq)) -> B.combined.cluster.proportions
 donor.color.pal <- RColorBrewer::brewer.pal("Set3", n = 5)
 ggplot(B.combined.cluster.proportions, aes(x = cluster,  y = freq, fill = donor, group = donor))+
-  geom_col(position = "stack", color = "white")+
-  scale_fill_manual(values = donor.color.pal)+
-  ylab("Proportion of Total Cells")+
-  theme_cowplot()
+    geom_col(position = "stack", color = "white")+
+    scale_fill_manual(values = donor.color.pal)+
+    ylab("Proportion of Total Cells")+
+    theme_cowplot()
 ```
 
 
@@ -248,10 +249,10 @@ We can also the cell cycle stages of different cells in our data to see if any c
 DimPlot(B.combined, group.by = "Phase")
 tibble(phase = B.combined$Phase, cluster = B.combined@active.ident) %>% group_by(phase, cluster) %>% tally() %>% group_by(cluster) %>% mutate(freq = n/sum(n)) -> B.combined.phase.proportions
 ggplot(B.combined.phase.proportions, aes(x = cluster,  y = freq, fill = phase, group = phase))+
-  geom_col(position = position_stack(), color = "black")+
-  scale_fill_discrete()+
-  ylab("Proportion of Cluster Cells")+
-  theme_cowplot()
+    geom_col(position = position_stack(), color = "black")+
+    scale_fill_discrete()+
+    ylab("Proportion of Cluster Cells")+
+    theme_cowplot()
 ```
 
 
@@ -266,20 +267,20 @@ cluster_list <- sort(unique(B.combined$seurat_clusters))
 n_clusters <- length(cluster_list)
 mrks <- SoupX::quickMarkers(B.combined[["RNA"]]@data, B.combined$seurat_clusters, N = 20)
 mrks_list <- lapply(cluster_list, function(i){
- mrks %>%
-   dplyr::filter(cluster == i) %>%
-   dplyr::pull(gene)
+    mrks %>%
+        dplyr::filter(cluster == i) %>%
+        dplyr::pull(gene)
 })
 dotplot_list <- lapply(1:n_clusters, function(i) {
-  cluster_name <- cluster_list[i]
-  temp.slot <- paste0("Cluster ", cluster_name)
-  if(length(mrks_list[[{{i}}]]) == 0){return(NULL)}
-  src <- c("#### {{temp.slot}} {.unnumbered}",
-           "```{r soupdotplot-{{i}}, fig.width = 12, fig.height = 6}",
-           "DotPlot(B.combined, features = mrks_list[[{{i}}]], assay = \"RNA\")+RotatedAxis()",
-           "```",
-           "")
-  knit_expand(text = src)
+    cluster_name <- cluster_list[i]
+    temp.slot <- paste0("Cluster ", cluster_name)
+    if(length(mrks_list[[{{i}}]]) == 0){return(NULL)}
+    src <- c("#### {{temp.slot}} {.unnumbered}",
+             "```{r soupdotplot-{{i}}, fig.width = 12, fig.height = 6}",
+             "DotPlot(B.combined, features = mrks_list[[{{i}}]], assay = \"RNA\")+RotatedAxis()",
+             "```",
+             "")
+    knit_expand(text = src)
 })
 out <- knit_child(text = unlist(dotplot_list), options = list(echo = FALSE, cache = FALSE))
 
@@ -300,25 +301,25 @@ DefaultAssay(B.combined) <- "RNA"
 cluster_list <- levels(B_RNA_markers$cluster)
 n_clusters <- length(cluster_list)
 gene_list <- lapply(cluster_list, function(i){
-  B_RNA_markers %>%
-    dplyr::filter(p_val_adj < 0.01) %>%
-    dplyr::filter(cluster == i) %>%
-    dplyr::top_n(20, wt = avg_log2FC) %>%
-    dplyr::filter(avg_log2FC > 0) %>%
-    dplyr::pull(gene)
+    B_RNA_markers %>%
+        dplyr::filter(p_val_adj < 0.01) %>%
+        dplyr::filter(cluster == i) %>%
+        dplyr::top_n(20, wt = avg_log2FC) %>%
+        dplyr::filter(avg_log2FC > 0) %>%
+        dplyr::pull(gene)
 })
 dotplot_list <- lapply(1:n_clusters, function(i) {
-  cluster_name <- cluster_list[i]
-  temp.slot <- paste0("Cluster ", cluster_name)
-  if(length(gene_list[[i]]) == 0 ){
-    return(NULL)
-  }
-  src <- c("#### {{temp.slot}} {.unnumbered}",
-           "```{r dotplot-{{i}}, fig.width = 12, fig.height = 6}",
-           "DotPlot(B.combined, features = gene_list[[{{i}}]])+RotatedAxis()+scale_color_viridis_c(direction = -1, option = \"A\")",
-           "```",
-           "")
-  knit_expand(text = src)
+    cluster_name <- cluster_list[i]
+    temp.slot <- paste0("Cluster ", cluster_name)
+    if(length(gene_list[[i]]) == 0 ){
+        return(NULL)
+    }
+    src <- c("#### {{temp.slot}} {.unnumbered}",
+             "```{r dotplot-{{i}}, fig.width = 12, fig.height = 6}",
+             "DotPlot(B.combined, features = gene_list[[{{i}}]])+RotatedAxis()+scale_color_viridis_c(direction = -1, option = \"A\")",
+             "```",
+             "")
+    knit_expand(text = src)
 })
 out <- knit_child(text = unlist(dotplot_list), options = list(echo = FALSE, cache = FALSE))
 ```
@@ -333,11 +334,11 @@ cluster_vector <- levels(B.combined@active.ident)
 n_clusters <- length(cluster_vector)
 
 markers.list <- lapply(1:n_clusters, function(i) {
-  B_RNA_markers %>%
-    dplyr::filter(cluster == cluster_vector[i] & p_val_adj < 0.01) %>%
-    dplyr::arrange(-avg_log2FC) %>%
-    dplyr::select(cluster, gene, avg_log2FC, p_val, p_val_adj) %>%
-    dplyr::mutate_if(is.numeric, format, digits = 3)
+    B_RNA_markers %>%
+        dplyr::filter(cluster == cluster_vector[i] & p_val_adj < 0.01) %>%
+        dplyr::arrange(-avg_log2FC) %>%
+        dplyr::select(cluster, gene, avg_log2FC, p_val, p_val_adj) %>%
+        dplyr::mutate_if(is.numeric, format, digits = 3)
 })
 
 
@@ -345,19 +346,19 @@ names(markers.list) <- paste("Cluster", cluster_vector)
 markers.list <- c(markers.list, "ALL" = list(B_RNA_markers %>%  dplyr::arrange(-avg_log2FC) %>% select(cluster, gene, avg_log2FC, p_val, p_val_adj) %>% mutate_if(is.numeric, format, digits = 3)))
 
 src_list <- lapply(1:(n_clusters+1), function(i) {
-  if(i == (n_clusters+1)){
-    label <- "ALL"
-  } else {
-    label <- cluster_vector[i]
-  }
-  src <- c("#### {{label}} {.unnumbered} ",
-           "<div style = \"width:65%; height:auto; align:left\">",
-           "```{r marker-cluster-{{label}}, fig.width=3}",
-           "DT::datatable(markers.list[[{{i}}]], rownames = FALSE)",
-           "```",
-           "</div>",
-           "")
-  knit_expand(text = src)
+    if(i == (n_clusters+1)){
+        label <- "ALL"
+    } else {
+        label <- cluster_vector[i]
+    }
+    src <- c("#### {{label}} {.unnumbered} ",
+             "<div style = \"width:65%; height:auto; align:left\">",
+             "```{r marker-cluster-{{label}}, fig.width=3}",
+             "DT::datatable(markers.list[[{{i}}]], rownames = FALSE)",
+             "```",
+             "</div>",
+             "")
+    knit_expand(text = src)
 })
 out <- knit_child(text = unlist(src_list), options = list(echo = FALSE, cache = FALSE))
 ```
@@ -366,38 +367,45 @@ out <- knit_child(text = unlist(src_list), options = list(echo = FALSE, cache = 
 ### F.5 Setting new cluster identities.
 ```{r new clust idents, eval = TRUE, fig.width=12}
 load(file = paste0(parent.directory, "sct_clustered.RData"))
-cluster_levels <- paste0("C",c(1,0,12,22,5,17,7,6,4,9,18,15,3,2,14,8,10,19,13,16,24,20,23,11,21))
-B.combined$new_clusters_nums <- factor(paste0("C", as.character(B.combined$annoy_nn_snn_res.1.3)), levels = cluster_levels)
-DotPlot(B.combined, features = rev(c("ID3", "CCR7", "IGHD", "HVCN1", "FCMR", "FCER2","CD69", "IER2", "FOS", "IFI44L", "ISG15",  "C1orf56", "APOBEC3C", "EIF5A", "LY9", "GPR183", "TNFRSF13B", "ANXA2", "S100A4", "S100A6", "VIM", "LMNA", "LGALS1", "CD27","IGHA1", "IGHA2", "LGALS3", "HLA-DRB5", "HLA-DQA1", "TXN", "TNFRSF18", "CD83", "MIR155HG",  "NFKB1", "NFKBIA", "NME1", "MYC", "CCL4", "CCL3", "RGS13", "LTB", "CD38", "CD81", "NEIL1", "AICDA", "HMGB2", "MKI67", "CDC20", "LMO2", "FCRL2", "FCRL3", "FCRL5", "BIK", "BCL2A1", "MZB1", "PRDM1", "RASSF6", "IGHM", "IGHG1", "IGHG2", "PLCG2")), group.by = "new_clusters_nums")+coord_flip()+RotatedAxis()+scale_color_viridis_c(option = "B", direction = -1)
-cluster_names <- c("Naive 1",
-                   "Naive 2",
-                   "Naive IER2",
-                   "Naive IFN1",
-                   "B EIF5A",
-                   "B LY9",
-                   "Memory 1",
-                   "Memory 2",
-                   "Memory 3",
-                   "Memory LGALS1",
-                   "Memory IgA",
-                   "Memory LGALS3",
-                   "Activated",
-                   "Activated NME1",
-                   "Activated Chemokine",
-                   "GC",
-                   "DZ 1",
-                   "DZ 2",
-                   "DZ 3",
-                   "GC LMO2",
-                   "GC IgA",
-                   "LZ",
-                   "ASC IgM",
-                   "ASC IgG",
-                   "B PLCG2")
+cluster.table <- readxl::read_excel("sct_seurat_3_cluster_assignment.xlsx")
+cluster.levels <- c("Naive 1",
+                    "Naive 2",
+                    "Naive IER2",
+                    "Naive IFN1",
+                    "B EIF5A",
+                    "B LY9",
+                    "Memory 1",
+                    "Memory 2",
+                    "Memory 3",
+                    "Memory LGALS1",
+                    "Memory IgA",
+                    "Memory LGALS3",
+                    "Activated",
+                    "Activated NME1",
+                    "Activated Chemokine",
+                    "GC",
+                    "DZ 1",
+                    "DZ 2",
+                    "DZ 3",
+                    "GC LMO2",
+                    "GC IgA",
+                    "LZ",
+                    "ASC IgM",
+                    "ASC IgG",
+                    "B PLCG2")
+cluster.table <- cluster.table %>%
+    dplyr::mutate(cluster_names = factor(cluster_names, levels = cluster.levels)) %>%
+    dplyr::arrange(cluster_names) %>%
+    dplyr::mutate(new_clusters_num = factor(new_clusters_num, levels = new_clusters_num))
 
-B.combined$cluster_names <- plyr::mapvalues(B.combined$new_clusters_nums,
-                                            from = cluster_levels,
-                                            to = cluster_names)
+B.combined$new_clusters_nums <- factor(paste0("C", as.character(B.combined$annoy_nn_snn_res.1.3)), levels = cluster.table$new_clusters_num)
+DotPlot(B.combined, features = rev(c("ID3", "CCR7", "IGHD", "HVCN1", "FCMR", "FCER2","CD69", "IER2", "FOS", "IFI44L", "ISG15",  "C1orf56", "APOBEC3C", "EIF5A", "LY9", "GPR183", "TNFRSF13B", "ANXA2", "S100A4", "S100A6", "VIM", "LMNA", "LGALS1", "CD27","IGHA1", "IGHA2", "LGALS3", "HLA-DRB5", "HLA-DQA1", "TXN", "TNFRSF18", "CD83", "MIR155HG",  "NFKB1", "NFKBIA", "NME1", "MYC", "CCL4", "CCL3", "RGS13", "LTB", "CD38", "CD81", "NEIL1", "AICDA", "HMGB2", "MKI67", "CDC20", "LMO2", "FCRL2", "FCRL3", "FCRL5", "BIK", "BCL2A1", "MZB1", "PRDM1", "RASSF6", "IGHM", "IGHG1", "IGHG2", "PLCG2")), group.by = "new_clusters_nums")+coord_flip()+RotatedAxis()+scale_color_viridis_c(option = "B", direction = -1)
+
+
+B.combined$cluster_names <- plyr::mapvalues(as.character(B.combined$new_clusters_nums),
+                                            from = as.character(cluster.table$new_clusters_num),
+                                            to = as.character(cluster.table$cluster_names))
+B.combined$cluster_names <- factor(B.combined$cluster_names, levels = levels(cluster.table$cluster_names))
 
 Idents(B.combined) <- "cluster_names"
 
@@ -434,25 +442,25 @@ load(file = paste0(parent.directory, "naive_memory_markers.RData"))
 cluster_list <- levels(B_naive_RNA_markers$cluster)
 n_clusters <- length(cluster_list)
 gene_list <- lapply(cluster_list, function(i){
-  B_naive_RNA_markers %>%
-    dplyr::filter(p_val_adj < 0.01) %>%
-    dplyr::filter(cluster == i) %>%
-    dplyr::top_n(20, wt = avg_log2FC) %>%
-    dplyr::filter(avg_log2FC > 0) %>%
-    dplyr::pull(gene)
+    B_naive_RNA_markers %>%
+        dplyr::filter(p_val_adj < 0.01) %>%
+        dplyr::filter(cluster == i) %>%
+        dplyr::top_n(20, wt = avg_log2FC) %>%
+        dplyr::filter(avg_log2FC > 0) %>%
+        dplyr::pull(gene)
 })
 dotplot_list <- lapply(1:n_clusters, function(i) {
-  cluster_name <- cluster_list[i]
-  temp.slot <- paste0("Cluster ", cluster_name)
-  if(length(gene_list[[i]]) == 0 ){
-    return(NULL)
-  }
-  src <- c("#### {{temp.slot}} {.unnumbered}",
-           "```{r dotplot-naive-{{i}}, fig.width = 12, fig.height = 6}",
-           "DotPlot(B.naive, features = gene_list[[{{i}}]])+RotatedAxis()+scale_color_viridis_c(direction = -1, option = \"A\")",
-           "```",
-           "")
-  knit_expand(text = src)
+    cluster_name <- cluster_list[i]
+    temp.slot <- paste0("Cluster ", cluster_name)
+    if(length(gene_list[[i]]) == 0 ){
+        return(NULL)
+    }
+    src <- c("#### {{temp.slot}} {.unnumbered}",
+             "```{r dotplot-naive-{{i}}, fig.width = 12, fig.height = 6}",
+             "DotPlot(B.naive, features = gene_list[[{{i}}]])+RotatedAxis()+scale_color_viridis_c(direction = -1, option = \"A\")",
+             "```",
+             "")
+    knit_expand(text = src)
 })
 out <- knit_child(text = unlist(dotplot_list), options = list(echo = FALSE, cache = FALSE))
 ```
@@ -465,25 +473,25 @@ We plot the Memory B cell markers for each of the Memory clusters from compariso
 cluster_list <- levels(B_memory_RNA_markers$cluster)
 n_clusters <- length(cluster_list)
 gene_list <- lapply(cluster_list, function(i){
-  B_memory_RNA_markers %>%
-    dplyr::filter(p_val_adj < 0.01) %>%
-    dplyr::filter(cluster == i) %>%
-    dplyr::top_n(20, wt = avg_log2FC) %>%
-    dplyr::filter(avg_log2FC > 0) %>%
-    dplyr::pull(gene)
+    B_memory_RNA_markers %>%
+        dplyr::filter(p_val_adj < 0.01) %>%
+        dplyr::filter(cluster == i) %>%
+        dplyr::top_n(20, wt = avg_log2FC) %>%
+        dplyr::filter(avg_log2FC > 0) %>%
+        dplyr::pull(gene)
 })
 dotplot_list <- lapply(1:n_clusters, function(i) {
-  cluster_name <- cluster_list[i]
-  temp.slot <- paste0("Cluster ", cluster_name)
-  if(length(gene_list[[i]]) == 0 ){
-    return(NULL)
-  }
-  src <- c("#### {{temp.slot}} {.unnumbered}",
-           "```{r dotplot-mem-{{i}}, fig.width = 12, fig.height = 6}",
-           "DotPlot(B.memory, features = gene_list[[{{i}}]])+RotatedAxis()+scale_color_viridis_c(direction = -1, option = \"A\")",
-           "```",
-           "")
-  knit_expand(text = src)
+    cluster_name <- cluster_list[i]
+    temp.slot <- paste0("Cluster ", cluster_name)
+    if(length(gene_list[[i]]) == 0 ){
+        return(NULL)
+    }
+    src <- c("#### {{temp.slot}} {.unnumbered}",
+             "```{r dotplot-mem-{{i}}, fig.width = 12, fig.height = 6}",
+             "DotPlot(B.memory, features = gene_list[[{{i}}]])+RotatedAxis()+scale_color_viridis_c(direction = -1, option = \"A\")",
+             "```",
+             "")
+    knit_expand(text = src)
 })
 out <- knit_child(text = unlist(dotplot_list), options = list(echo = FALSE, cache = FALSE))
 ```
@@ -492,7 +500,7 @@ out <- knit_child(text = unlist(dotplot_list), options = list(echo = FALSE, cach
 ## H. Downstream processing
 ### H.1 Isolating GC and PBs
 We isolate the GC and PBs from the rest of the dataset.
-```{r split dataset, eval = FALSE, include = TRUE, results = "hide"}
+```{r split dataset, eval = TRUE, include = TRUE, results = "hide"}
 
 GCPC_clusters <- c("LZ", "GC", "GC IgA", "DZ 1", "DZ 2", "DZ 3", "B PLCG2", "GC LMO2", "ASC IgM", "ASC IgG")
 all_clusters <- levels(B.combined$cluster_names)
@@ -502,14 +510,14 @@ nonGCPC_clusters_identifiers <- WhichCells(B.combined, idents = nonGCPC_clusters
 GCPC_clusters_identifiers <- WhichCells(B.combined, idents = GCPC_clusters)
 
 B.combined@meta.data[GCPC_clusters_identifiers,] %>%
-  rownames_to_column(var = "identifier") %>%
-  mutate(parent_cluster = cluster_names, orig_ident = orig.ident) %>%
-  select(identifier, parent_cluster, donor, orig_ident) -> GCPC_metadata
+    rownames_to_column(var = "identifier") %>%
+    mutate(parent_cluster = cluster_names, orig_ident = orig.ident) %>%
+    select(identifier, parent_cluster, donor, orig_ident) -> GCPC_metadata
 
 B.combined@meta.data[nonGCPC_clusters_identifiers,] %>%
-  rownames_to_column(var = "identifier") %>%
-  mutate(parent_cluster = cluster_names, orig_ident = orig.ident) %>%
-  select(identifier, parent_cluster, donor, orig_ident) -> nonGCPC_metadata
+    rownames_to_column(var = "identifier") %>%
+    mutate(parent_cluster = cluster_names, orig_ident = orig.ident) %>%
+    select(identifier, parent_cluster, donor, orig_ident) -> nonGCPC_metadata
 
 save(GCPC_metadata, nonGCPC_metadata, file = paste0(parent.directory, "sct_cluster_metadata.RData"))
 
@@ -518,6 +526,7 @@ save(GCPC_metadata, nonGCPC_metadata, file = paste0(parent.directory, "sct_clust
 ### H.2 Conversion to h5ad
 We create an h5ad file of the RNA assay for use in pySCENIC downstream.
 ```{r h5ad conversion, eval = FALSE}
+#devtools::install_github("cellgeni/sceasy")
 parent.directory <- "/Volumes/SanDiskSSD/bar-or_lab/projects/tonsil_project/analysis/sct_seurat/"
 load(file = paste0(parent.directory, "sct_named_clusters.RData"))
 var_genes <- B.combined[["integrated"]]@var.features
@@ -525,4 +534,6 @@ B.combined[["RNA"]]@meta.features["highly_variable"] <- rownames(B.combined[["RN
 sceasy::convertFormat(B.combined, from="seurat", to="anndata", outFile= paste0(parent.directory, "sct_named_clusters.h5ad"), main_layer = "counts", transfer_layers = "data")
 ```
 
-
+```{r sinfo, eval = TRUE}
+sessionInfo()
+```

@@ -5,7 +5,7 @@ author: "Diego A. Espinoza"
 date: Last compiled on `r format(Sys.Date(), "%d %B %Y")`
 output:
   html_document:
-    code_folding: hide
+    code_folding: show
     fig_caption: yes
     df_print: paged
 ---
@@ -32,8 +32,7 @@ require(kableExtra)
 require(readxl)
 require(reticulate)
 require(clusterProfiler)
-source("seurat_helper_functions.R")
-source("RunAUCell.R")
+require(pochi)
 parent.directory <- "intermediate/"
 ```
 
@@ -91,7 +90,7 @@ regulon_list <- lapply(1:length(my_filtered_regulons), function(i){
 names(regulon_list) <- paste0(my_filtered_regulons, "-regulon")
 
 #run AUCell scoring algorithm
-B.combined <- RunAUCell(B.combined, assay = "RNA", ranking.save = TRUE, genesets = regulon_list, slot = "counts",auc_assay_name = "regulons")
+B.combined <- pochi::RunAUCell(B.combined, assay = "RNA", ranking.save = TRUE, genesets = regulon_list, slot = "counts",auc_assay_name = "regulons")
 
 #scale the AUCell regulon values and perform UMAP using custom script. I use 
 #a custom `BuildAnnoyUMAP` function which saves the kNN made by the uwot 
@@ -101,14 +100,14 @@ DefaultAssay(B.combined) <- "regulons"
 B.combined <- ScaleData(B.combined)
 B.combined <- BuildAnnoyUMAP(B.combined,
                              assay = "regulons",
-                             use_raw = TRUE,
+                             features = rownames(B.combined[["regulons"]]),
+                             reduction = NULL,
                              slot = "scale.data",
-                             n_neighbors = 30,
-                             prune_snn = 1/30,
+                             n.neighbors = 30,
+                             prune.snn = 1/30,
                              metric = "euclidean",
-                             reduction_name = "regulon_UMAP",
-                             graph_key = "regulon_annoy",
-                             reduction_key = "regulonumap_")
+                             reduction.name = "regulon_UMAP",
+                             graph_key =  "regulon_annoy")
 B.combined <- FindClusters(B.combined, graph.name = "regulon_annoy_nn_snn", resolution = 0.8)
 ```
 
@@ -116,7 +115,7 @@ B.combined <- FindClusters(B.combined, graph.name = "regulon_annoy_nn_snn", reso
 In order to maintain consistency in scoring genesets, we will also load our other non-regulon geneset AUCs into our Seurat object.
 ```{r auc genesets, eval = FALSE}
 #add geneset AUCs to the Seurat object
-my_genesets_dataframe <- ReadGMT("intermediate/genesets.gmt")
+my_genesets_dataframe <- ReadGMT("intermediate/aucell/genesets.gmt")
 my_genesets <- levels(unique(my_genesets_dataframe$term))
 my_genesets_names <- my_genesets
 geneset_list <- lapply(1:length(my_genesets), function(i){
@@ -129,7 +128,7 @@ names(geneset_list) <- my_genesets_names
 B.combined <- RunAUCell(B.combined, assay = "RNA", ranking.save = FALSE, ranking.key = "ranking", genesets = geneset_list, slot = "counts",auc_assay_name = "genesetAUC")
 
 
-hm <- clusterProfiler::read.gmt("/Volumes/SanDiskSSD/bar-or_lab/projects/databases/molsigdb/h.all.v7.2.symbols.gmt")
+hm <- clusterProfiler::read.gmt("molsigdb/h.all.v7.2.symbols.gmt")
 hm_names <- hm %>% dplyr::group_by(term) %>% dplyr::group_keys() %>% dplyr::pull(term)
 hm_list <- hm %>%
   dplyr::group_by(term) %>%
@@ -142,17 +141,15 @@ B.combined <- RunAUCell(B.combined, assay = "RNA", ranking.save = FALSE, ranking
 ```
 
 ### B.4 Regulon and geneset differential expression
+Here we determine which gene set AUCell scores are differentially expressed (Wilcoxon rank-sum test) between clusters.
 ```{r reg and gs DE, eval = FALSE}
 
 diff_exp_regulons <- presto::wilcoxauc(B.combined, seurat_assay = "regulons", group_by = "cluster_names", assay = "counts")
 diff_exp_genesets <- presto::wilcoxauc(B.combined, seurat_assay = "genesetAUC", group_by = "cluster_names", assay = "counts")
-diff_exp_btms <- presto::wilcoxauc(B.combined, seurat_assay = "btmAUC", group_by = "cluster_names", assay = "counts")
 diff_exp_hms <- presto::wilcoxauc(B.combined, seurat_assay = "hmAUC", group_by = "cluster_names", assay = "counts")
 
-save(diff_exp_regulons, diff_exp_genesets, diff_exp_btms, diff_exp_hms, B.combined, file = paste0(parent.directory, "sct_reguloned.RData"))
+save(diff_exp_regulons, diff_exp_genesets, diff_exp_hms, B.combined, file = paste0(parent.directory, "sct_reguloned.RData"))
 ```
-
-
 
 ### B.5 Plotting original Louvain clusters on dimensionality reduction results using the regulon and harmony UMAP reductions.
 We show the clusters determined by the Louvain algorithm on the harmony_UMAP and regulon_UMAP reductions first.
@@ -167,12 +164,13 @@ dimplot + regulon_dimplot
 ### B.6 Plotting regulon Louvain clusters on dimensionality reduction results using the regulon and harmony UMAP reductions.
 We next plot the clusters determined by the Louvain algorithm on the regulon-reduced dataset.
 ```{r umap with regulon clusters, eval = TRUE, fig.width = 12}
-dimplot_regulon_clusters <- DimPlot(B.combined, reduction  = "pca_UMAP", group.by =  "regulon_annoy_nn_snn_res.0.8", label = TRUE, label.size = 5, shuffle = TRUE)+scale_color_manual(values = c(RColorBrewer::brewer.pal(11, "Set3")))
-regulon_dimplot_regulon_clusters <- DimPlot(B.combined, reduction  = "regulon_UMAP", group.by =  "regulon_annoy_nn_snn_res.0.8", label = TRUE, label.size = 5, shuffle = TRUE)+scale_color_manual(values = c(RColorBrewer::brewer.pal(11, "Set3")))
+dimplot_regulon_clusters <- DimPlot(B.combined, reduction  = "pca_UMAP", group.by =  "regulon_annoy_nn_snn_res.0.8", label = TRUE, label.size = 5, shuffle = TRUE)+scale_color_manual(values = c(RColorBrewer::brewer.pal(12, "Set3")))
+regulon_dimplot_regulon_clusters <- DimPlot(B.combined, reduction  = "regulon_UMAP", group.by =  "regulon_annoy_nn_snn_res.0.8", label = TRUE, label.size = 5, shuffle = TRUE)+scale_color_manual(values = c(RColorBrewer::brewer.pal(12, "Set3")))
 dimplot_regulon_clusters + regulon_dimplot_regulon_clusters
 ```
 
 ### B.7 Alluvial plots 1
+We next plot the regulon-derived clusters on the existing RNA-derived clusters to get a better idea of the compositional relationship of the two sets of clusters.
 ```{r alluvial, eval = TRUE, fig.height=6}
 B.combined@meta.data %>%
   select(cluster_names, regulon_annoy_nn_snn_res.0.8) %>%
@@ -184,11 +182,12 @@ B.combined@meta.data %>%
   ggplot(aes(x = RNA, y = proport, fill = regulon))+
   geom_col(position = "stack", color = 'black')+
   theme(axis.text.x=element_text(angle = 45, hjust = 1))+
-  scale_fill_manual(values = c(RColorBrewer::brewer.pal(11, "Set3")))
+  scale_fill_manual(values = c(RColorBrewer::brewer.pal(12, "Set3")))
 
 ```
 
 ### B.8 Alluvial plots 2
+More plotting of regulon-derived clusters on the existing RNA-derived clusters to get a better idea of the compositional relationship of the two sets of clusters.
 ```{r alluvial dos, eval = TRUE, fig.height=6}
 B.combined@meta.data %>%
   select(cluster_names, regulon_annoy_nn_snn_res.0.8) %>%
@@ -202,7 +201,7 @@ B.combined@meta.data %>%
   geom_col(position = "stack", color = 'black')+
   theme(axis.text.x=element_text(angle = 45, hjust = 1))+
   coord_cartesian(ylim = c(0,1))+
-  scale_fill_manual(values = c(RColorBrewer::brewer.pal(11, "Set3")))
+  scale_fill_manual(values = c(RColorBrewer::brewer.pal(12, "Set3")))
 
 B.combined@meta.data %>%
   select(cluster_names, regulon_annoy_nn_snn_res.0.8) %>%
@@ -216,7 +215,7 @@ B.combined@meta.data %>%
   geom_col(position = "stack", color = 'black')+
   theme(axis.text.x=element_text(angle = 45, hjust = 1))+
   coord_cartesian(ylim = c(0,1))+
-  scale_fill_manual(values = c(RColorBrewer::brewer.pal(11, "Set3")))
+  scale_fill_manual(values = c(RColorBrewer::brewer.pal(12, "Set3")))
 
 B.combined@meta.data %>%
   select(cluster_names, regulon_annoy_nn_snn_res.0.8) %>%
@@ -230,7 +229,7 @@ B.combined@meta.data %>%
   geom_col(position = "stack", color = 'black')+
   theme(axis.text.x=element_text(angle = 45, hjust = 1))+
   coord_cartesian(ylim = c(0,1))+
-  scale_fill_manual(values = c(RColorBrewer::brewer.pal(11, "Set3")))
+  scale_fill_manual(values = c(RColorBrewer::brewer.pal(12, "Set3")))
 
 B.combined@meta.data %>%
   select(cluster_names, regulon_annoy_nn_snn_res.0.8) %>%
@@ -244,7 +243,7 @@ B.combined@meta.data %>%
   geom_col(position = "stack", color = 'black')+
   theme(axis.text.x=element_text(angle = 45, hjust = 1))+
   coord_cartesian(ylim = c(0,1))+
-  scale_fill_manual(values = c(RColorBrewer::brewer.pal(11, "Set3")))
+  scale_fill_manual(values = c(RColorBrewer::brewer.pal(12, "Set3")))
 
 B.combined@meta.data %>%
   select(cluster_names, regulon_annoy_nn_snn_res.0.8) %>%
@@ -258,25 +257,31 @@ B.combined@meta.data %>%
   geom_col(position = "stack", color = 'black')+
   theme(axis.text.x=element_text(angle = 45, hjust = 1))+
   coord_cartesian(ylim = c(0,1))+
-  scale_fill_manual(values = c(RColorBrewer::brewer.pal(11, "Set3")))
+  scale_fill_manual(values = c(RColorBrewer::brewer.pal(12, "Set3")))
 
 ```
 
 
 ### B.9 Heatmap of regulon and geneset markers based on RNA clusters
+We next plot the differentially expressed gene sets (comparison between clusters using a one-vs-all approach) in heat maps across the RNA-based clusters, with stars denoting "differentially expressed" gene sets (AUC > 0.9 or AUC > 0.8).
 ```{r heatmap, eval = TRUE, fig.width=12, fig.height=9}
-DoGenesetHeatmap(B.combined, assay = "regulons", diff_exp_results = diff_exp_regulons, group.by = "cluster_names", scale_rows = TRUE, auc_choice = 0.9)
-DoGenesetHeatmap(B.combined, assay = "genesetAUC", diff_exp_results = diff_exp_genesets, group.by = "cluster_names", scale_rows = TRUE, auc_choice = 0.8, plot_all = TRUE)
-DoGenesetHeatmap(B.combined, assay = "hmAUC", diff_exp_results = diff_exp_hms, group.by = "cluster_names", scale_rows = TRUE, auc_choice = 0.8, plot_all = FALSE)
+pochi::DoStarHeatmap(B.combined, assay = "regulons", diff_exp_results = diff_exp_regulons, group.by = "cluster_names", scale_rows = TRUE, auc_choice = 0.9, cluster_cols = FALSE)
+pochi::DoStarHeatmap(B.combined, assay = "genesetAUC", diff_exp_results = diff_exp_genesets, group.by = "cluster_names", scale_rows = TRUE, auc_choice = 0.8, plot_all = TRUE, cluster_cols = FALSE)
+pochi::DoStarHeatmap(B.combined, assay = "hmAUC", diff_exp_results = diff_exp_hms, group.by = "cluster_names", scale_rows = TRUE, auc_choice = 0.8, plot_all = FALSE, cluster_cols = FALSE)
 
 ```
 
 
 ### B.10 Heatmap of markers based on regulon clusters
+We next plot the differentially expressed gene sets (comparison between clusters using a one-vs-all approach) in heat maps across the regulon-based clusters, with stars denoting "differentially expressed" gene sets (AUC > 0.8)
 ```{r heatmap 2, eval = TRUE, fig.width=12, fig.height=9}
 Idents(B.combined) <- "regulon_annoy_nn_snn_res.0.8"
 diff_exp_regulons_by_regulons <- presto::wilcoxauc(B.combined, seurat_assay = "regulons", group_by = "regulon_annoy_nn_snn_res.0.8", assay = "counts")
-DoGenesetHeatmap(B.combined, assay = "regulons", diff_exp_results = diff_exp_regulons_by_regulons, group.by = "regulon_annoy_nn_snn_res.0.8", scale_rows = TRUE, auc_choice = 0.8, plot_all = FALSE)
+pochi::DoStarHeatmap(B.combined, assay = "regulons", diff_exp_results = diff_exp_regulons_by_regulons, group.by = "regulon_annoy_nn_snn_res.0.8", scale_rows = TRUE, auc_choice = 0.8, plot_all = FALSE)
 ```
 
 
+
+```{r}
+sessionInfo()
+```

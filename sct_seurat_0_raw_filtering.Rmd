@@ -71,7 +71,7 @@ rm(list = ls()[grepl(".data", ls())])
 ### Addition of gene information
 In addition, we add the "percent.mt" information to each cell in each dataset, which details what percentage of the molecular counts are derived from mitochondrial genes. Because our samples are FACS-derived, we also determine the percentage of molecular counts being derived from dissociation-induced genes (van den Brink, et al. Single-cell sequencing reveals dissociation-induced gene expression in tissue subpopulations. Nat Methods 2017).
 ```{r supplementary information, eval = rerun_analysis}
-read_excel("dissociation_genes.xlsx") %>% select('Human ID') %>% na.omit %>% pull("Human ID") -> dissociation.genes
+read_excel("genesets/dissociation_genes.xlsx") %>% select('Human ID') %>% na.omit %>% pull("Human ID") -> dissociation.genes
 
 for(i in 1:length(B.list)){
   temp.dissoc.genes <- dissociation.genes[dissociation.genes %in% rownames(B.list[[i]])]

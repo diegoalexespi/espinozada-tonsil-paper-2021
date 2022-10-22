@@ -5,7 +5,7 @@ author: "Diego A. Espinoza"
 date: Last compiled on `r format(Sys.Date(), "%d %B %Y")`
 output:
   html_document:
-    code_folding: hide
+    code_folding: show
 fig_caption: yes
 ---
 
@@ -25,7 +25,7 @@ require(cowplot)
 require(kableExtra)
 require(readr)
 require(readxl)
-source("seurat_helper_functions.R")
+require(pochi)
 parent.directory <- "intermediate/"
 parent.directory.mtx <- "filtered/"
 ```
@@ -67,7 +67,7 @@ B.list <- lapply(1:length(B.list), function(i){
 ### A.2. Re-run SCTransform normalization and integration
 Now that we have our new Seurat objects, we will add metadata and then will re-perform our SCTransform normalization and the Seurat v3 integration algorithm.
 ```{r re-add important information and normalization, eval = FALSE}
-read_excel("dissociation_genes.xlsx") %>% select('Human ID') %>% na.omit %>% pull("Human ID") -> dissociation.genes
+read_excel("genesets/dissociation_genes.xlsx") %>% select('Human ID') %>% na.omit %>% pull("Human ID") -> dissociation.genes
 
 for(i in 1:length(B.list)){
   temp.dissoc.genes <- dissociation.genes[dissociation.genes %in% rownames(B.list[[i]])]
@@ -103,13 +103,13 @@ B.gcpc <- BuildAnnoyUMAP(B.gcpc,
                          reduction = "pca",
                          metric = "euclidean",
                          dims = dims.to.use,
-                         reduction_name = "pca_UMAP",
-                         reduction_key = "pcaumap_",
-                         return_graphs = TRUE)
+                         reduction.name = "pca_UMAP",
+                         reduction_key  = "pcaumap_",
+                         save.graphs  = TRUE)
 DefaultAssay(B.gcpc) <- "RNA"
 B.gcpc <- NormalizeData(B.gcpc)
 
-B.gcpc <- FindClusters(B.gcpc, resolution = 0.7, graph.name = "annoy_nn_snn")
+B.gcpc <- FindClusters(B.gcpc, resolution = 0.5, graph.name = "annoy_nn_snn")
 B.gcpc$previous_idents <- plyr::mapvalues(rownames(B.gcpc@meta.data), from = GCPC_metadata$identifier, to = as.character(GCPC_metadata$parent_cluster))
 
 save(B.gcpc, file = paste0(parent.directory,"sct_seurat_gcpc_clustered.RData"))
@@ -234,7 +234,7 @@ out <- knit_child(text = unlist(src_list), options = list(echo = FALSE, cache = 
 The cluster identities remain largely the same as before. 
 ```{r cluster renaming, eval = FALSE}
 #load(file = paste0(parent.directory, "sct_seurat_gcpc_clustered.RData"))
-cluster_levels <- paste0("C",c(1,8,4,12,7,6,2,10,9,5,3,11,0))
+cluster_levels <- paste0("C",c(1,8,5,11,7,6,4,9,2,3,10,0))
 cluster_names <- c("GC 1",
                    "GC 2",
                    "GC 3",
@@ -244,11 +244,10 @@ cluster_names <- c("GC 1",
                    "DZ 2",
                    "DZ 3", 
                    "DZ 4",
-                   "DZ 5",
                    "GC LMO2",
                    "ASC IgM",
                    "ASC IgG")
-B.gcpc$new_clusters_nums <- factor(paste0("C", as.character(B.gcpc$annoy_nn_snn_res.0.7)),
+B.gcpc$new_clusters_nums <- factor(paste0("C", as.character(B.gcpc$annoy_nn_snn_res.0.5)),
                                    levels = cluster_levels)
 B.gcpc$cluster_names <- plyr::mapvalues(B.gcpc$new_clusters_nums,
                                         from = cluster_levels,
@@ -264,3 +263,7 @@ DimPlot(B.gcpc, label = TRUE, label.box = TRUE, repel = TRUE, cols = c("dodgerbl
 
 
 
+
+```{r}
+sessionInfo()
+```
