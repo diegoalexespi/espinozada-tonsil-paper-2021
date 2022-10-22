@@ -15,5 +15,5 @@ Step 4 (pseudotemporal analysis): [sct_seurat_4_slingshot.html](https://htmlprev
 
 Step 5 (figures): [sct_seurat_5_figures.html](https://htmlpreview.github.io/?https://github.com/diegoalexespi/espinozada-tonsil-paper-2021/blob/main/sct_seurat_5_figures.html)
 
-Step 6 (figure S8): [sct_seurat_6_figures.html](https://htmlpreview.github.io/?https://github.com/diegoalexespi/espinozada-tonsil-paper-2021/blob/main/sct_seurat_6_external_comparison.html)
+Step 6 (figure S8): [sct_seurat_6_external_comparison.html](https://htmlpreview.github.io/?https://github.com/diegoalexespi/espinozada-tonsil-paper-2021/blob/main/sct_seurat_6_external_comparison.html)
 
