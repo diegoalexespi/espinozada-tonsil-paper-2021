@@ -5,7 +5,7 @@ Preprocessing gene sets: [sct_seurat_X_geneset_to_gmt.html](https://htmlpreview.
 
 Step 0 (Pre-processing): [sct_seurat_0_raw_filtering.html](https://htmlpreview.github.io/?https://github.com/diegoalexespi/espinozada-tonsil-paper-2021/blob/main/sct_seurat_0_raw_filtering.html)
 
-Step 1 (Integration and clustering): [sct_seurat_1_seuratv3.html]()
+Step 1 (Integration and clustering): [sct_seurat_1_seuratv3.html](https://htmlpreview.github.io/?https://github.com/diegoalexespi/espinozada-tonsil-paper-2021/blob/main/sct_seurat_1_seuratv3.html)
 
 Step 2 (pySCENIC results): [sct_seurat_2_pyscenic.html](https://htmlpreview.github.io/?https://github.com/diegoalexespi/espinozada-tonsil-paper-2021/blob/main/sct_seurat_2_pyscenic.html)
 
