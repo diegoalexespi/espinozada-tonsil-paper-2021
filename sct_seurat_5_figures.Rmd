@@ -442,10 +442,17 @@ write.table(regulon_dataframe, file = paste0(figure_directory, "TableS8.txt"), s
 
 
 ### Table S9
-```{r table s6, eval = TRUE}
+```{r table s9, eval = TRUE}
 sum(assoRes$pvalue < 0.01)
 dim(assoRes)
 write.table(assoRes, file = paste0(figure_directory, "TableS9.txt"), sep = "\t", quote = FALSE, row.names = FALSE)
+```
+
+### Table zip
+```{r tablezip, eval=TRUE}
+tbls_to_zip <- grep(".txt", dir('figures', full.names = TRUE), value = TRUE)
+zip(zipfile = 'figures/supplementary_tables.zip', files = tbls_to_zip)
+
 ```
 
 
