@@ -223,5 +223,5 @@ write.table(x = CS_UP_genes, file = paste0(target_directory, "/costim_up.txt"), 
 full_table <- rbind(data.frame(gene_name = L_UP_only_genes, set = "CD40L_up_only"),
                     data.frame(gene_name = B_UP_only_genes, set = "BCR_up_only"),
                     data.frame(gene_name = CS_UP_genes, set = "COSTIM_up"))
-write.table(x = full_table, file = paste0(target_directory, "/TableS4.txt"), sep = "\t", quote = FALSE, row.names = FALSE, col.names = TRUE)
+write.table(x = full_table, file = paste0(target_directory, "/TableS6.txt"), sep = "\t", quote = FALSE, row.names = FALSE, col.names = TRUE)
 ```

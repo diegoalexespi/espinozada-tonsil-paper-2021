@@ -168,8 +168,8 @@ base_dimplot <- DimPlot(B.combined,
   geom_segment(x = -9, y = -3.5, xend = -9,  yend = -14)+
   geom_segment(x = -9, y = -3.5, xend = -8.5,  yend = -3.5)+
   geom_segment(x = -9, y = -14, xend = -8.5,  yend = -14)+
-  annotate("text", label = "GC cells", x = -11, y = -10)+
-  geom_segment(x = -10, y =3, xend = -6,  yend = -4)+
+  annotate("text", label = "GC cells", x = -10.5, y = -10)+
+  geom_segment(x = -10, y =3, xend = -7,  yend = -3)+
   annotate("text", label = "ASCs", x = -7, y = 0.5)
 base_dimplot <- plot_grid(base_dimplot, full_legend, ncol = 2, rel_widths = c(1, 0.2))
 
@@ -403,25 +403,49 @@ dev.off()
 plot_grid(fig3abc, fig_3def,  ncol = 1, rel_heights = c(2,3))
 ```
 
-### Table S2
-```{r table s2, eval = TRUE}
+### Table S2 and S3
+```{r table s2 and S3, eval = TRUE}
+cluster_table <- B.combined@meta.data %>%
+  dplyr::group_by(donor, cluster_names) %>%
+  dplyr::tally() %>%
+  magrittr::set_colnames(c("donor", "cluster_name", "count"))
+
+partition_table <- cluster_table %>%
+  dplyr::mutate(grouping = case_when(grepl("GC|DZ|LZ|PLCG2", cluster_name) ~ "GC",
+                                     grepl("ASC", cluster_name) ~ "ASC",
+                                     TRUE ~ "non-GC")) %>%
+  dplyr::group_by(donor, grouping) %>%
+  dplyr::summarize(count = sum(count))
+
+write.table(cluster_table, file = paste0(figure_directory, "TableS2.txt"), sep = "\t", quote = FALSE, row.names = FALSE)
+write.table(partition_table, file = paste0(figure_directory, "TableS3.txt"), sep = "\t", quote = FALSE, row.names = FALSE)
+```
+
+### Table S4
+```{r table s4, eval = TRUE}
 B_RNA_markers$cluster_names <- factor(plyr::mapvalues(paste0("C", B_RNA_markers$cluster),
                                                       from = levels(B.combined$new_clusters_nums),
                                                       to = levels(B.combined$cluster_names)), levels = levels(B.combined$cluster_names))
-write.table(B_RNA_markers, file = paste0(figure_directory, "TableS2.txt"), sep = "\t", quote = FALSE, row.names = FALSE)
+write.table(B_RNA_markers, file = paste0(figure_directory, "TableS4.txt"), sep = "\t", quote = FALSE, row.names = FALSE)
 ```
 
 
-### Table S5
+### Table S7
 ```{r table s5, eval = TRUE}
-write.table(diff_exp_regulons, file = paste0(figure_directory, "TableS5.txt"), sep = "\t", quote = FALSE, row.names = FALSE)
+write.table(diff_exp_regulons, file = paste0(figure_directory, "TableS7.txt"), sep = "\t", quote = FALSE, row.names = FALSE)
 ```
 
-### Table S6
+### Table S8
+```{r table s8, eval = TRUE}
+write.table(regulon_dataframe, file = paste0(figure_directory, "TableS8.txt"), sep = "\t", quote = FALSE, row.names = FALSE)
+```
+
+
+### Table S9
 ```{r table s6, eval = TRUE}
 sum(assoRes$pvalue < 0.01)
 dim(assoRes)
-write.table(assoRes, file = paste0(figure_directory, "TableS6.txt"), sep = "\t", quote = FALSE, row.names = FALSE)
+write.table(assoRes, file = paste0(figure_directory, "TableS9.txt"), sep = "\t", quote = FALSE, row.names = FALSE)
 ```
 
 

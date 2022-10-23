@@ -1,0 +1,4 @@
+Sample Name	Sex	Age	10X Lanes	Final Cells Recovered post-processing
+TC124	Male	4	3	"8912, 8962, 10183"
+TC125	Female	17	1	8491
+TC126	Male	5	1	8828
