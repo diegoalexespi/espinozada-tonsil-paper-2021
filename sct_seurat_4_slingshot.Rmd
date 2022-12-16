@@ -176,10 +176,10 @@ B.gcpc$pt_target_curve <- ifelse(B.gcpc$cluster_names %in% c("GC LMO2", "GC 1"),
 pt_dimplot <- FeaturePlot(B.gcpc, features = "pt_target_curve")+scale_color_viridis_c("pseudotime")+slingshot_path_mappings[[target_curve_index]]+ggtitle("")
 pt_dimplot
 
-pseudotime_cutoff_lo <- 2
+pseudotime_cutoff_lo <- 2.5
 B.gcpc$pt_target_curve_trimmed <- ifelse(B.gcpc$pt_target_curve > pseudotime_cutoff_lo, B.gcpc$pt_target_curve, NA)
 pseudotime_cutoff_hi <- 10
-B.gcpc$pt_target_curve_trimmed <- ifelse(B.gcpc$pt_target_curve < pseudotime_cutoff_hi, B.gcpc$pt_target_curve, NA)
+B.gcpc$pt_target_curve_trimmed <- ifelse(B.gcpc$pt_target_curve_trimmed < pseudotime_cutoff_hi, B.gcpc$pt_target_curve_trimmed, NA)
 
 pt_dimplot <- FeaturePlot(B.gcpc, features = "pt_target_curve_trimmed")+scale_color_viridis_c("pseudotime")+slingshot_path_mappings[[target_curve_index]]+ggtitle("")
 pt_dimplot
