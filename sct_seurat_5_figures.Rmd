@@ -288,7 +288,7 @@ base_dotplot <- DotPlot(B.combined, features = chosen_dotplot_features, group.by
     dotplot_theme
 
 DefaultAssay(B.combined) <- "genesetAUC"
-base_heatmap <- pochi::DoStarHeatmap(B.combined, assay = "genesetAUC", diff_exp_results = diff_exp_genesets, group.by = "cluster_names", scale_rows = TRUE, auc_choice = 0.85, plot_all = FALSE, y_text_size = label_size, cluster_cols = FALSE, viridis_option = "D")
+base_heatmap <- pochi::DoStarHeatmap(B.combined, assay = "genesetAUC", diff_exp_results = diff_exp_genesets, group.by = "cluster_names", scale_rows = TRUE, auc_choice = 0.85, plot_all = FALSE, y_text_size = label_size, cluster_cols = FALSE, viridis_option = "D")+scale_y_discrete(labels = function(x) gsub("vitora", "Victora", x))
 
 left_plot_1 <- cowplot::plot_grid(NA, base_dimplot, fplots, ncol = 1, rel_heights = c(1,5,2), labels = c("a", "b", "c"))
 right_plot_1 <- cowplot::plot_grid(base_dotplot, NULL, base_heatmap, ncol = 1, rel_heights = c(4,0.15,1), align = "v", axis = "lr", labels = c("d", "e"))
@@ -336,9 +336,9 @@ myc_fosl1_rel_df <- regulon_dataframe %>% dplyr::filter(TF %in% c("MYC", "FOSL1"
 venn_color_scale <- RColorBrewer::brewer.pal(8, "Set2")[c(1:7)]
 fig2c <- eulerr::euler(combinations = list(
     MYC = myc_fosl1_rel_df %>% filter(TF=="MYC") %>% select(Targets) %>% unlist(), 
-    FOSL1 = myc_fosl1_rel_df %>% filter(TF=="FOSL1") %>% select(Targets) %>% unlist(),
+    `       FOSL1` = myc_fosl1_rel_df %>% filter(TF=="FOSL1") %>% select(Targets) %>% unlist(),
     REL = myc_fosl1_rel_df %>% filter(TF=="REL") %>% select(Targets) %>% unlist())) %>%
-    plot(fills = venn_color_scale, quantities = list(type =  "counts"))
+    plot(fills = venn_color_scale, quantities = list(type =  "counts", fontsize = 9), labels = list(fontsize = 9), adjust_labels = TRUE, eulerr::eulerr_options(padding = grid::unit(0.05, units = "cm")))
 
 hm <- pochi::ReadGMT(file_path =  "molsigdb/h.all.v7.2.symbols.gmt", file_sep = "\t")
 TFs_for_enrich <- c("MYC", "FOSL1", "REL")
